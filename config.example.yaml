@@ -1,0 +1,6 @@
+# OpenAI-совместимый API: базовый URL без /chat/completions.
+base_url: "https://api.openai.com/v1"
+api_key: "вставьте_ваш_ключ"
+model: "gpt-4.1-mini"
+# Максимальное время одного API-запроса.
+request_timeout: 30s
