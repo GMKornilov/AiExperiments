@@ -1,0 +1,70 @@
+:root {
+  color-scheme: dark;
+  --color-ink: #f8eedf;
+  --color-muted: #c6b096;
+  --color-canvas: #160c08;
+  --color-surface: #2c1912;
+  --color-surface-strong: #3b2118;
+  --color-line: rgb(248 226 199 / 16%);
+  --color-accent: #e8a65d;
+  --color-accent-light: #ffd39d;
+  --color-danger: #ffb4a0;
+  --shadow-card: 0 24px 72px rgb(7 3 1 / 38%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  min-height: 100%;
+  background: var(--color-canvas);
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  color: var(--color-ink);
+  background:
+    radial-gradient(circle at 12% 8%, #553020 0, transparent 30rem),
+    radial-gradient(circle at 88% 77%, #3b251a 0, transparent 34rem),
+    var(--color-canvas);
+  font-family: Iowan Old Style, Palatino Linotype, Book Antiqua, Georgia, serif;
+}
+
+button,
+textarea,
+input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+:focus-visible {
+  outline: 3px solid var(--color-accent-light);
+  outline-offset: 3px;
+}
+
+::selection {
+  color: #28140a;
+  background: var(--color-accent-light);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

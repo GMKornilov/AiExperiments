@@ -1,0 +1,12 @@
+# DeepSeek / OpenAI-compatible API: базовый URL без /chat/completions.
+base_url: "https://api.deepseek.com"
+api_key: "вставьте_ваш_ключ"
+model: "deepseek-chat"
+# Максимальное время одного API-запроса.
+request_timeout: 30s
+# Необязательный путь к system prompt свободного режима; default: prompts/barista-free-system.txt.
+free_system_prompt_path: "prompts/barista-free-system.txt"
+# Необязательный путь к system prompt контролируемого режима; default: prompts/barista-controlled-system.txt.
+controlled_system_prompt_path: "prompts/barista-controlled-system.txt"
+# Необязательный путь к raw JSON Schema; default: schemas/barista-response.schema.json.
+response_schema_path: "schemas/barista-response.schema.json"

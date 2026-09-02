@@ -1,0 +1,33 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "x-max-total-string-words": 60,
+  "required": ["summary", "focus_points", "recipe"],
+  "properties": {
+    "summary": {
+      "type": "string",
+      "description": "Краткая рекомендация пользователю с действием или выбором; ассистент не представлен исполнителем кофейного действия.",
+      "x-max-words": 15
+    },
+    "focus_points": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "string",
+        "x-max-words": 8
+      }
+    },
+    "recipe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coffee_g", "water_g", "temperature_c", "brew_time_sec"],
+      "properties": {
+        "coffee_g": { "type": "number" },
+        "water_g": { "type": "number" },
+        "temperature_c": { "type": "number" },
+        "brew_time_sec": { "type": "integer" }
+      }
+    }
+  }
+}
