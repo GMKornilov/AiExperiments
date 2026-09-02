@@ -1,0 +1,87 @@
+.content {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.content > :first-child {
+  margin-top: 0;
+}
+
+.content > :last-child {
+  margin-bottom: 0;
+}
+
+.content p,
+.content ul,
+.content ol,
+.content blockquote,
+.content pre,
+.content table {
+  margin: 0.7em 0;
+}
+
+.content ul,
+.content ol {
+  padding-left: 1.35em;
+}
+
+.content a {
+  color: var(--color-accent-light);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+}
+
+.content blockquote {
+  margin-left: 0;
+  padding-left: 0.9em;
+  border-left: 2px solid var(--color-accent);
+  color: var(--color-muted);
+}
+
+.content code {
+  overflow-wrap: anywhere;
+  padding: 0.12em 0.3em;
+  border-radius: 4px;
+  background: rgb(0 0 0 / 25%);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.content pre {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow: auto;
+  padding: 0.85em;
+  border-radius: 8px;
+  background: #160b07;
+}
+
+.content pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.content table {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.content th,
+.content td {
+  padding: 0.45em 0.6em;
+  border: 1px solid var(--color-line);
+  text-align: left;
+}
+
+.content input[type="checkbox"] {
+  margin-right: 0.45em;
+  accent-color: var(--color-accent);
+}

@@ -1,0 +1,28 @@
+services:
+  barista-api:
+    build: ./backend
+    volumes:
+      - ./backend/config.yaml:/app/config.yaml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+  barista-web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        SITE_URL: ${SITE_URL:-http://localhost:3000}
+    ports:
+      - "3000:3000"
+    environment:
+      BARISTA_BACKEND_URL: http://barista-api:8080
+    depends_on:
+      barista-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:3000"]
+      interval: 10s
+      timeout: 3s
+      retries: 5

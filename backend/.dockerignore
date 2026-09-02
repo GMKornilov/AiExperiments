@@ -1,0 +1,7 @@
+.git
+bin
+tmp
+config.yaml
+.gocache
+frontend/node_modules
+frontend/.next
