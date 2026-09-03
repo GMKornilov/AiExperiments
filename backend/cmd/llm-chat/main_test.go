@@ -202,8 +202,28 @@ func configureCLITest(t *testing.T, baseURL string) {
 	writeMainTestFile(t, filepath.Join(directory, "free.txt"), "Свободный режим: дай практичный совет.")
 	writeMainTestFile(t, filepath.Join(directory, "controlled.txt"), "Контролируемый режим.")
 	writeMainTestFile(t, filepath.Join(directory, "schema.json"), cliBaristaSchema)
+	writeAlgorithmPromptFixtures(t, directory)
 	writeMainTestFile(t, filepath.Join(directory, configPath), "base_url: "+baseURL+"\napi_key: test-key\nmodel: test-model\nfree_system_prompt_path: free.txt\ncontrolled_system_prompt_path: controlled.txt\nresponse_schema_path: schema.json\n")
 	t.Chdir(directory)
+}
+
+func writeAlgorithmPromptFixtures(t *testing.T, directory string) {
+	t.Helper()
+	files := map[string]string{
+		"algorithm-direct-system.txt":                 "direct {{.Language}} {{.InterfaceRule}}",
+		"algorithm-step-by-step-system.txt":           "steps {{.Language}} {{.InterfaceRule}}",
+		"algorithm-experts-system.txt":                "experts {{.Language}} {{.InterfaceRule}}",
+		"algorithm-meta-prompt-generation-system.txt": "generate {{.Language}} {{.InterfaceRule}}",
+		"algorithm-meta-solution-system.txt":          "solution {{.Language}} {{.InterfaceRule}}",
+		"algorithm-meta-solution-user.txt":            "{{.Statement}} {{.GeneratedPrompt}}",
+	}
+	for name, content := range files {
+		path := filepath.Join(directory, "prompts", name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		writeMainTestFile(t, path, content)
+	}
 }
 
 func writeMainTestFile(t *testing.T, path, content string) {

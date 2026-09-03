@@ -1,9 +1,11 @@
 import { BaristaWorkspace } from "@/features/barista/components/barista-workspace";
+import { SiteNavigation } from "@/components/site-navigation/site-navigation";
 import styles from "./page.module.css";
 
 export default function Home() {
   return (
     <main className={styles.pageShell}>
+      <SiteNavigation active="barista" />
       <header className={styles.masthead}>
         <p className={styles.eyebrow}>Ваш кофейный напарник</p>
         <h1 className={styles.title}>

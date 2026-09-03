@@ -199,6 +199,43 @@ func TestClientChatRejectsEmptyAnswer(t *testing.T) {
 	}
 }
 
+func TestClientChatMessagesPreservesWhitespaceAndBoundsAlgorithmResponse(t *testing.T) {
+	t.Parallel()
+	t.Run("exact whitespace", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writeResponse(t, writer, "  Markdown\n\n  code  \n")
+		}))
+		defer server.Close()
+		answer, err := NewClient(server.URL, "test-key", time.Second).ChatMessages(context.Background(), "model", []Message{{Role: "user", Content: "condition"}})
+		if err != nil || answer != "  Markdown\n\n  code  \n" {
+			t.Errorf("ChatMessages() = %q, %v", answer, err)
+		}
+	})
+	t.Run("response exceeds one MiB", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writeResponse(t, writer, strings.Repeat("x", maxAlgorithmResponseBytes+1))
+		}))
+		defer server.Close()
+		_, err := NewClient(server.URL, "test-key", time.Second).ChatMessages(context.Background(), "model", []Message{{Role: "user", Content: "condition"}})
+		if err == nil || !strings.Contains(err.Error(), "превышает") {
+			t.Errorf("ChatMessages() error = %v, want size error", err)
+		}
+	})
+}
+
+func TestClientChatMessagesRejectsNonJSONProviderResponse(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/jsonp")
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"answer"}}]}`))
+	}))
+	defer server.Close()
+	_, err := NewClient(server.URL, "test-key", time.Second).ChatMessages(context.Background(), "model", []Message{{Role: "user", Content: "condition"}})
+	if err == nil {
+		t.Fatal("ChatMessages() error = nil, want malformed provider response rejection")
+	}
+}
+
 func controlledAnswerError(t *testing.T, schema json.RawMessage, answer string) error {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {

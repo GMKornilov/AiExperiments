@@ -13,9 +13,11 @@ import (
 	"strings"
 	"syscall"
 
+	"aichallenge/week_1/task_1/internal/algorithms"
 	"aichallenge/week_1/task_1/internal/barista"
 	"aichallenge/week_1/task_1/internal/config"
 	"aichallenge/week_1/task_1/internal/httpapi"
+	"aichallenge/week_1/task_1/internal/llm"
 )
 
 func main() {
@@ -29,11 +31,20 @@ func main() {
 		log.Printf("Ошибка: %v", err)
 		os.Exit(1)
 	}
-	server := &http.Server{Addr: address, Handler: httpapi.NewHandler(barista.NewService(cfg))}
+	server := &http.Server{Addr: address, Handler: newHandler(cfg)}
 	if err := serve(server); err != nil {
 		log.Printf("Ошибка сервера: %v", err)
 		os.Exit(1)
 	}
+}
+
+func newHandler(cfg config.Config) http.Handler {
+	baristaClient := llm.NewClient(cfg.BaseURL, cfg.APIKey, cfg.RequestTimeout)
+	algorithmsClient := llm.NewClient(cfg.BaseURL, cfg.APIKey, cfg.AlgorithmRequestTimeout)
+	return httpapi.NewHandler(
+		barista.NewServiceWithClient(cfg, baristaClient),
+		algorithms.NewService(algorithmsClient, cfg.Model, cfg.AlgorithmRequestTimeout, cfg.AlgorithmPrompts),
+	)
 }
 
 func parseFlags(args []string) (string, string, error) {

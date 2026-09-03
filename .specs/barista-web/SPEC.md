@@ -55,7 +55,7 @@ Success:
 
 ## Интерфейс
 
-- Первый экран сразу показывает выбор режима, поле запроса и submit.
+- При переходе на `GET /` открывается вкладка `Бариста` с выбором режима, полем запроса и submit. Контракт общей навигации `Бариста`/`Алгоритмы` и пути `/algorithms` принадлежит [спецификации алгоритмов](../algorithm-prompt-comparison/SPEC.md).
 - Есть состояния empty, loading, error и success; повторный submit во время loading заблокирован.
 - В free-режиме основной результат отображается как Markdown.
 - В controlled-режиме JSON визуализируется предметно: строковые поля `summary` и три `focus_points` рендерятся как Markdown, recipe metrics (`coffee_g`, `water_g`, `temperature_c`, `brew_time_sec`) остаются значениями.

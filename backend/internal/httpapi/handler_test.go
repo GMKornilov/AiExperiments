@@ -7,9 +7,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
+	"aichallenge/week_1/task_1/internal/algorithms"
 	"aichallenge/week_1/task_1/internal/barista"
 )
 
@@ -165,3 +167,120 @@ func postChat(handler http.Handler, payload string) *httptest.ResponseRecorder {
 	handler.ServeHTTP(response, request)
 	return response
 }
+
+type fakeAlgorithmService struct {
+	calls   int
+	method  algorithms.Method
+	request algorithms.Request
+	result  algorithms.Result
+	err     error
+}
+
+func (s *fakeAlgorithmService) Solve(_ context.Context, method algorithms.Method, request algorithms.Request) (algorithms.Result, error) {
+	s.calls++
+	s.method = method
+	s.request = request
+	return s.result, s.err
+}
+
+func TestAlgorithmHandlerRoutesRawSnapshotAndSuccessfulEnvelope(t *testing.T) {
+	statement := "  условие\\nОграничение: n ≤ 10\\nПример: 1 -> 2  "
+	tests := []struct {
+		path   string
+		method algorithms.Method
+	}{
+		{"/api/algorithms/direct", algorithms.MethodDirect},
+		{"/api/algorithms/step-by-step", algorithms.MethodStepByStep},
+		{"/api/algorithms/generated-prompt", algorithms.MethodGeneratedPrompt},
+		{"/api/algorithms/experts", algorithms.MethodExperts},
+	}
+	for _, test := range tests {
+		t.Run(string(test.method), func(t *testing.T) {
+			service := &fakeAlgorithmService{result: algorithms.Result{
+				Method: test.method, Answer: "неполный Markdown без кода", Trace: []algorithms.TraceStep{{
+					Step: "solution", Messages: []algorithms.Message{{Role: "system", Content: "exact prompt"}},
+				}},
+			}}
+			response := postAlgorithm(NewHandler(&fakeChatService{}, service), test.path, `{"statement":`+strconvQuote(statement)+`,"language":"cpp"}`, "application/json")
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d; body=%s", response.Code, response.Body.String())
+			}
+			if service.calls != 1 || service.method != test.method || service.request != (algorithms.Request{Statement: statement, Language: algorithms.LanguageCPP}) {
+				t.Errorf("service call = %#v, method=%q, request=%#v", service.calls, service.method, service.request)
+			}
+			var body algorithmResponse
+			if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Status != "success" || body.Answer != "неполный Markdown без кода" || body.Error != nil || !reflect.DeepEqual(body.Trace, service.result.Trace) {
+				t.Errorf("response body = %#v", body)
+			}
+		})
+	}
+}
+
+func TestAlgorithmHandlerRejectsInvalidRequestWithoutServiceCall(t *testing.T) {
+	tests := []struct {
+		name        string
+		payload     string
+		contentType string
+		wantStatus  int
+	}{
+		{"non JSON", "text", "text/plain", http.StatusUnsupportedMediaType},
+		{"empty", `{"statement":" ","language":"python"}`, "application/json", http.StatusBadRequest},
+		{"unknown language", `{"statement":"condition","language":"go"}`, "application/json", http.StatusBadRequest},
+		{"unknown field", `{"statement":"condition","language":"python","extra":true}`, "application/json", http.StatusBadRequest},
+		{"too many code points", `{"statement":"` + strings.Repeat("я", maxStatementRunes+1) + `","language":"python"}`, "application/json", http.StatusBadRequest},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := &fakeAlgorithmService{}
+			response := postAlgorithm(NewHandler(&fakeChatService{}, service), "/api/algorithms/direct", test.payload, test.contentType)
+			if response.Code != test.wantStatus || service.calls != 0 {
+				t.Errorf("status/calls = %d/%d, want %d/0", response.Code, service.calls, test.wantStatus)
+			}
+			var body algorithmResponse
+			if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Status != "error" || body.Error == nil || body.Error.Code != algorithms.ErrorInvalidRequest || body.Answer != "" || len(body.Trace) != 0 {
+				t.Errorf("error envelope = %#v", body)
+			}
+		})
+	}
+}
+
+func TestAlgorithmHandlerKeepsPartialTraceAndHidesProviderDetails(t *testing.T) {
+	secret := "Bearer private-test-secret https://llm.private.example"
+	trace := []algorithms.TraceStep{{Step: "generate-prompt", Messages: []algorithms.Message{{Role: "system", Content: "first"}}, Response: stringPointer("raw generated prompt")}, {Step: "solution", Messages: []algorithms.Message{{Role: "user", Content: "second"}}}}
+	service := &fakeAlgorithmService{result: algorithms.Result{Method: algorithms.MethodGeneratedPrompt, Trace: trace}, err: algorithms.NewError(algorithms.ErrorTimeout, errors.New(secret))}
+	response := postAlgorithm(NewHandler(&fakeChatService{}, service), "/api/algorithms/generated-prompt", `{"statement":"condition","language":"java"}`, "application/json")
+	if response.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d; body=%s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), secret) {
+		t.Errorf("response leaks provider detail: %s", response.Body.String())
+	}
+	var body algorithmResponse
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error == nil || body.Error.Code != algorithms.ErrorTimeout || !reflect.DeepEqual(body.Trace, trace) {
+		t.Errorf("partial failure envelope = %#v", body)
+	}
+}
+
+func postAlgorithm(handler http.Handler, path, payload, contentType string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodPost, path, bytes.NewBufferString(payload))
+	request.Header.Set("Content-Type", contentType)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func strconvQuote(value string) string {
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
+}
+
+func stringPointer(value string) *string { return &value }
