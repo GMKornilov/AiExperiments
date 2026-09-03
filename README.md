@@ -10,7 +10,7 @@ AI-бариста доступен как интерактивный CLI и web-
    cp backend/config.example.yaml backend/config.yaml
    ```
 
-2. Отредактируйте `config.yaml`: заполните `api_key`; при необходимости измените `base_url`, `model` и пути к prompt/schema. Отдельные пути `free_system_prompt_path` и `controlled_system_prompt_path` позволяют менять поведение режимов независимо; по умолчанию используются `prompts/barista-free-system.txt`, `prompts/barista-controlled-system.txt` и `schemas/barista-response.schema.json`.
+2. Отредактируйте `config.yaml`: заполните `api_key`; при необходимости измените `base_url`, `model` и пути к prompt/schema. Отдельные пути `free_system_prompt_path` и `controlled_system_prompt_path` позволяют менять поведение режимов независимо; по умолчанию используются `prompts/barista-free-system.txt`, `prompts/barista-controlled-system.txt` и `schemas/barista-response.schema.json`. Шаблоны алгоритмов находятся в `algorithms_prompts_dir` (по умолчанию `prompts`) и загружаются при старте.
 
 3. Запустите в нужном режиме:
 
@@ -80,6 +80,8 @@ docker build --build-arg SITE_URL=https://example.com -t ai-barista-web -f front
 docker run --rm -p 3000:3000 -e BARISTA_BACKEND_URL=http://host.docker.internal:8080 ai-barista-web
 ```
 
+В интерфейсе доступны вкладки «Бариста» и «Алгоритмы». Вторая отправляет четыре независимых same-origin запроса к `/api/algorithms/*`; приватный backend URL остаётся server-side.
+
 Backend-образ не содержит `config.yaml` или API-ключ: конфигурация всегда монтируется read-only при запуске.
 
 `config.yaml` добавлен в `.gitignore`, поэтому ключ не попадёт в Git. Для другого OpenAI-совместимого провайдера укажите его базовый URL без конечного `/chat/completions`.
@@ -96,4 +98,4 @@ frontend/Dockerfile   frontend-образ Next.js
 docker-compose.yml    два сервиса: barista-api и barista-web
 ```
 
-Каждый запрос ограничен параметром `request_timeout`. Пустое введённое сообщение не отправляется в API. Файлы prompt и schema загружаются при старте, поэтому их можно менять без изменения Go-кода.
+CLI и AI-бариста ограничены `request_timeout` (по умолчанию 30 секунд). Алгоритмы используют отдельный `algorithm_request_timeout` (по умолчанию и максимум 180 секунд) на каждый LLM-вызов; у meta-метода два последовательных вызова имеют отдельные полные бюджеты. Пустое введённое сообщение не отправляется в API. Файлы prompt и schema загружаются при старте, поэтому их можно менять без изменения Go-кода.

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"strings"
 	"time"
@@ -23,7 +24,7 @@ type Client struct {
 
 type chatRequest struct {
 	Model          string          `json:"model"`
-	Messages       []message       `json:"messages"`
+	Messages       []Message       `json:"messages"`
 	ResponseFormat *responseFormat `json:"response_format,omitempty"`
 }
 
@@ -31,18 +32,43 @@ type responseFormat struct {
 	Type string `json:"type"`
 }
 
-type message struct {
+// Message is one OpenAI-compatible chat message.
+type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
+
+// message remains an alias for package-internal compatibility.
+type message = Message
 
 type chatResponse struct {
 	Choices []choice `json:"choices"`
 }
 
 type choice struct {
-	Message message `json:"message"`
+	Message Message `json:"message"`
 }
+
+const maxAlgorithmResponseBytes = 1 << 20
+
+// ChatErrorKind classifies errors from the traceable ChatMessages path.
+type ChatErrorKind string
+
+const (
+	// ChatErrorPreSend means validation or request construction failed before Do.
+	ChatErrorPreSend ChatErrorKind = "pre_send"
+	// ChatErrorInvalidResponse means the provider returned an unreadable response.
+	ChatErrorInvalidResponse ChatErrorKind = "invalid_response"
+)
+
+// ChatError retains a category without exposing provider details to callers.
+type ChatError struct {
+	Kind ChatErrorKind
+	err  error
+}
+
+func (e *ChatError) Error() string { return e.err.Error() }
+func (e *ChatError) Unwrap() error { return e.err }
 
 // NewClient creates a Client with its own HTTP client and request timeout.
 func NewClient(baseURL, apiKey string, timeout time.Duration) *Client {
@@ -57,7 +83,7 @@ func NewClient(baseURL, apiKey string, timeout time.Duration) *Client {
 
 // Chat sends one user message and returns the first completion.
 func (c *Client) Chat(ctx context.Context, model, prompt string) (string, error) {
-	return c.chat(ctx, model, []message{{Role: "user", Content: prompt}}, nil)
+	return c.chat(ctx, model, []Message{{Role: "user", Content: prompt}}, nil)
 }
 
 // ChatWithSystemPrompt sends a free-form completion with a system and user message.
@@ -68,7 +94,7 @@ func (c *Client) ChatWithSystemPrompt(ctx context.Context, model, systemPrompt, 
 	return c.chat(
 		ctx,
 		model,
-		[]message{{Role: "system", Content: systemPrompt}, {Role: "user", Content: prompt}},
+		[]Message{{Role: "system", Content: systemPrompt}, {Role: "user", Content: prompt}},
 		nil,
 	)
 }
@@ -93,7 +119,7 @@ func (c *Client) ChatControlled(
 	answer, err := c.chat(
 		ctx,
 		model,
-		[]message{
+		[]Message{
 			{Role: "system", Content: controlledSystemMessage(systemPrompt, schema)},
 			{Role: "user", Content: prompt},
 		},
@@ -111,17 +137,34 @@ func (c *Client) ChatControlled(
 	return answer, nil
 }
 
+// ChatMessages sends the supplied ordered messages and preserves answer whitespace.
+// It is intended for algorithm prompts that must expose their exact trace.
+func (c *Client) ChatMessages(ctx context.Context, model string, messages []Message) (string, error) {
+	return c.chatWithLimit(ctx, model, messages, nil, maxAlgorithmResponseBytes, true)
+}
+
 func (c *Client) chat(
 	ctx context.Context,
 	model string,
-	messages []message,
+	messages []Message,
 	responseFormat *responseFormat,
 ) (string, error) {
+	return c.chatWithLimit(ctx, model, messages, responseFormat, 0, false)
+}
+
+func (c *Client) chatWithLimit(
+	ctx context.Context,
+	model string,
+	messages []Message,
+	responseFormat *responseFormat,
+	responseLimit int64,
+	preserveWhitespace bool,
+) (string, error) {
 	if strings.TrimSpace(model) == "" {
-		return "", fmt.Errorf("модель не должна быть пустой")
+		return "", c.traceableError(preserveWhitespace, ChatErrorPreSend, fmt.Errorf("модель не должна быть пустой"))
 	}
 	if len(messages) == 0 || strings.TrimSpace(messages[len(messages)-1].Content) == "" {
-		return "", fmt.Errorf("сообщение не должно быть пустым")
+		return "", c.traceableError(preserveWhitespace, ChatErrorPreSend, fmt.Errorf("сообщение не должно быть пустым"))
 	}
 
 	body, err := json.Marshal(chatRequest{
@@ -130,7 +173,7 @@ func (c *Client) chat(
 		ResponseFormat: responseFormat,
 	})
 	if err != nil {
-		return "", fmt.Errorf("кодирование запроса: %w", err)
+		return "", c.traceableError(preserveWhitespace, ChatErrorPreSend, fmt.Errorf("кодирование запроса: %w", err))
 	}
 
 	request, err := http.NewRequestWithContext(
@@ -140,7 +183,7 @@ func (c *Client) chat(
 		bytes.NewReader(body),
 	)
 	if err != nil {
-		return "", fmt.Errorf("создание HTTP-запроса: %w", err)
+		return "", c.traceableError(preserveWhitespace, ChatErrorPreSend, fmt.Errorf("создание HTTP-запроса: %w", err))
 	}
 	request.Header.Set("Authorization", "Bearer "+c.apiKey)
 	request.Header.Set("Content-Type", "application/json")
@@ -151,15 +194,41 @@ func (c *Client) chat(
 	}
 	defer response.Body.Close()
 
-	responseBody, err := io.ReadAll(response.Body)
+	reader := io.Reader(response.Body)
+	if responseLimit > 0 {
+		reader = io.LimitReader(response.Body, responseLimit+1)
+	}
+	responseBody, err := io.ReadAll(reader)
 	if err != nil {
 		return "", fmt.Errorf("чтение ответа API: %w", err)
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return "", fmt.Errorf("API вернул %s: %s", response.Status, responseBody)
 	}
+	if preserveWhitespace && !isJSONContentType(response.Header.Get("Content-Type")) {
+		return "", c.traceableError(preserveWhitespace, ChatErrorInvalidResponse, fmt.Errorf("ответ API имеет некорректный Content-Type"))
+	}
+	if responseLimit > 0 && int64(len(responseBody)) > responseLimit {
+		return "", c.traceableError(preserveWhitespace, ChatErrorInvalidResponse, fmt.Errorf("ответ API превышает допустимый размер"))
+	}
 
-	return parseAnswer(responseBody)
+	answer, err := parseAnswer(responseBody, preserveWhitespace)
+	if err != nil {
+		return "", c.traceableError(preserveWhitespace, ChatErrorInvalidResponse, err)
+	}
+	return answer, nil
+}
+
+func (c *Client) traceableError(traceable bool, kind ChatErrorKind, err error) error {
+	if !traceable {
+		return err
+	}
+	return &ChatError{Kind: kind, err: err}
+}
+
+func isJSONContentType(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	return err == nil && strings.EqualFold(mediaType, "application/json")
 }
 
 func isJSONObject(value json.RawMessage) bool {
@@ -279,7 +348,7 @@ func countStringWords(value any) int {
 	}
 }
 
-func parseAnswer(responseBody []byte) (string, error) {
+func parseAnswer(responseBody []byte, preserveWhitespace bool) (string, error) {
 	var result chatResponse
 	if err := json.Unmarshal(responseBody, &result); err != nil {
 		return "", fmt.Errorf("разбор ответа API: %w", err)
@@ -288,9 +357,12 @@ func parseAnswer(responseBody []byte) (string, error) {
 		return "", fmt.Errorf("API не вернул вариантов ответа")
 	}
 
-	answer := strings.TrimSpace(result.Choices[0].Message.Content)
-	if answer == "" {
+	answer := result.Choices[0].Message.Content
+	if strings.TrimSpace(answer) == "" {
 		return "", fmt.Errorf("API вернул пустой ответ")
+	}
+	if !preserveWhitespace {
+		answer = strings.TrimSpace(answer)
 	}
 
 	return answer, nil

@@ -28,9 +28,14 @@ type Service struct {
 
 // NewService creates a service with the configuration's API settings.
 func NewService(cfg config.Config) *Service {
+	return NewServiceWithClient(cfg, llm.NewClient(cfg.BaseURL, cfg.APIKey, cfg.RequestTimeout))
+}
+
+// NewServiceWithClient creates a service with a shared LLM client.
+func NewServiceWithClient(cfg config.Config, client *llm.Client) *Service {
 	return &Service{
 		config: cfg,
-		client: llm.NewClient(cfg.BaseURL, cfg.APIKey, cfg.RequestTimeout),
+		client: client,
 	}
 }
 
