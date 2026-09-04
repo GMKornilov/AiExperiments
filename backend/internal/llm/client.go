@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"strings"
@@ -26,6 +27,7 @@ type chatRequest struct {
 	Model          string          `json:"model"`
 	Messages       []Message       `json:"messages"`
 	ResponseFormat *responseFormat `json:"response_format,omitempty"`
+	Temperature    *float64        `json:"temperature,omitempty"`
 }
 
 type responseFormat struct {
@@ -86,6 +88,14 @@ func (c *Client) Chat(ctx context.Context, model, prompt string) (string, error)
 	return c.chat(ctx, model, []Message{{Role: "user", Content: prompt}}, nil)
 }
 
+// ChatWithTemperature sends exactly one user message with an explicit temperature.
+func (c *Client) ChatWithTemperature(ctx context.Context, model, prompt string, temperature float64) (string, error) {
+	if math.IsNaN(temperature) || math.IsInf(temperature, 0) || temperature < 0 || temperature > 2 {
+		return "", fmt.Errorf("temperature должна быть конечным числом от 0 до 2")
+	}
+	return c.chatWithLimit(ctx, model, []Message{{Role: "user", Content: prompt}}, nil, &temperature, 0, false)
+}
+
 // ChatWithSystemPrompt sends a free-form completion with a system and user message.
 func (c *Client) ChatWithSystemPrompt(ctx context.Context, model, systemPrompt, prompt string) (string, error) {
 	if strings.TrimSpace(systemPrompt) == "" {
@@ -140,7 +150,7 @@ func (c *Client) ChatControlled(
 // ChatMessages sends the supplied ordered messages and preserves answer whitespace.
 // It is intended for algorithm prompts that must expose their exact trace.
 func (c *Client) ChatMessages(ctx context.Context, model string, messages []Message) (string, error) {
-	return c.chatWithLimit(ctx, model, messages, nil, maxAlgorithmResponseBytes, true)
+	return c.chatWithLimit(ctx, model, messages, nil, nil, maxAlgorithmResponseBytes, true)
 }
 
 func (c *Client) chat(
@@ -149,7 +159,7 @@ func (c *Client) chat(
 	messages []Message,
 	responseFormat *responseFormat,
 ) (string, error) {
-	return c.chatWithLimit(ctx, model, messages, responseFormat, 0, false)
+	return c.chatWithLimit(ctx, model, messages, responseFormat, nil, 0, false)
 }
 
 func (c *Client) chatWithLimit(
@@ -157,6 +167,7 @@ func (c *Client) chatWithLimit(
 	model string,
 	messages []Message,
 	responseFormat *responseFormat,
+	temperature *float64,
 	responseLimit int64,
 	preserveWhitespace bool,
 ) (string, error) {
@@ -171,6 +182,7 @@ func (c *Client) chatWithLimit(
 		Model:          model,
 		Messages:       messages,
 		ResponseFormat: responseFormat,
+		Temperature:    temperature,
 	})
 	if err != nil {
 		return "", c.traceableError(preserveWhitespace, ChatErrorPreSend, fmt.Errorf("кодирование запроса: %w", err))

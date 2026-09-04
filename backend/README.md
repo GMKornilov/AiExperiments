@@ -28,3 +28,12 @@ CLI и AI-бариста используют `request_timeout` (по умолч
 Шесть алгоритмических шаблонов `algorithm-*.txt` загружаются и проверяются при старте из
 `algorithms_prompts_dir` (по умолчанию `prompts`, относительно `config.yaml`); изменение
 файлов применяется после перезапуска без пересборки Go-кода.
+
+`POST /api/temperature` принимает JSON-снимок
+`{"prompt":"Придумай короткий слоган","temperature":0.7}`. `prompt` после
+trim должен содержать от 1 до 4 000 Unicode-символов, `temperature` — конечное
+число от `0` до `2`; тело ограничено 64 KiB. Успешный ответ —
+`{"answer":"..."}`. Для запроса выполняется один OpenAI-совместимый Chat
+Completions вызов с одной пользовательской репликой и переданной температурой,
+без system prompt, JSON Schema и `response_format`. Этот маршрут не принимает
+`mode`, `statement` или `language` и использует общий `request_timeout`.

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"mime"
 	"net/http"
 	"strings"
@@ -33,6 +34,11 @@ type AlgorithmService interface {
 	Solve(context.Context, algorithms.Method, algorithms.Request) (algorithms.Result, error)
 }
 
+// TemperatureService is the one-shot completion capability used by the temperature handler.
+type TemperatureService interface {
+	Complete(context.Context, string, float64) (string, error)
+}
+
 type chatRequest struct {
 	Mode   string `json:"mode"`
 	Prompt string `json:"prompt"`
@@ -46,11 +52,20 @@ type chatResponse struct {
 
 // NewHandler creates the barista HTTP API handler.
 func NewHandler(service ChatService, algorithmServices ...AlgorithmService) http.Handler {
-	chat := chatHandler(service)
 	var algorithmService AlgorithmService
 	if len(algorithmServices) > 0 {
 		algorithmService = algorithmServices[0]
 	}
+	return newHandler(service, algorithmService, nil)
+}
+
+// NewHandlerWithTemperature creates an API handler that also serves POST /api/temperature.
+func NewHandlerWithTemperature(service ChatService, algorithmService AlgorithmService, temperatureService TemperatureService) http.Handler {
+	return newHandler(service, algorithmService, temperatureService)
+}
+
+func newHandler(service ChatService, algorithmService AlgorithmService, temperatureService TemperatureService) http.Handler {
+	chat := chatHandler(service)
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/api/chat":
@@ -71,10 +86,106 @@ func NewHandler(service ChatService, algorithmServices ...AlgorithmService) http
 				return
 			}
 			algorithmHandler(algorithmService, algorithmMethod(request.URL.Path)).ServeHTTP(writer, request)
+		case "/api/temperature":
+			writer.Header().Set("Cache-Control", "no-store")
+			if request.Method != http.MethodPost {
+				methodNotAllowed(writer, http.MethodPost)
+				return
+			}
+			temperatureHandler(temperatureService).ServeHTTP(writer, request)
 		default:
 			http.NotFound(writer, request)
 		}
 	})
+}
+
+type temperatureRequest struct {
+	Prompt      string  `json:"prompt"`
+	Temperature float64 `json:"temperature"`
+}
+
+type temperatureResponse struct {
+	Answer string `json:"answer"`
+}
+
+func temperatureHandler(service TemperatureService) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		payload, err := decodeTemperatureRequest(writer, request)
+		if err != nil {
+			writeTemperatureError(writer, temperatureErrorStatus(err))
+			return
+		}
+		if service == nil {
+			writeTemperatureError(writer, http.StatusBadGateway)
+			return
+		}
+
+		answer, err := service.Complete(request.Context(), payload.Prompt, payload.Temperature)
+		if err != nil || strings.TrimSpace(answer) == "" {
+			writeTemperatureError(writer, http.StatusBadGateway)
+			return
+		}
+		writeTemperatureJSON(writer, http.StatusOK, temperatureResponse{Answer: strings.TrimSpace(answer)})
+	}
+}
+
+func decodeTemperatureRequest(writer http.ResponseWriter, request *http.Request) (temperatureRequest, error) {
+	var result temperatureRequest
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(mediaType, "application/json") {
+		return result, errUnsupportedMediaType
+	}
+	_ = http.NewResponseController(writer).SetReadDeadline(time.Now().Add(10 * time.Second))
+	request.Body = http.MaxBytesReader(writer, request.Body, maxRequestBody)
+
+	decoder := json.NewDecoder(request.Body)
+	var fields map[string]json.RawMessage
+	if err := decoder.Decode(&fields); err != nil {
+		return result, err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return result, errors.New("тело должно содержать ровно один JSON-объект")
+	}
+	if len(fields) != 2 {
+		return result, errors.New("тело должно содержать только prompt и temperature")
+	}
+	prompt, hasPrompt := fields["prompt"]
+	temperatureValue, hasTemperature := fields["temperature"]
+	if !hasPrompt || !hasTemperature || strings.TrimSpace(string(temperatureValue)) == "null" || json.Unmarshal(prompt, &result.Prompt) != nil || json.Unmarshal(temperatureValue, &result.Temperature) != nil {
+		return result, errors.New("некорректные поля запроса")
+	}
+	result.Prompt = strings.TrimSpace(result.Prompt)
+	if result.Prompt == "" || utf8.RuneCountInString(result.Prompt) > maxPromptRunes {
+		return result, errors.New("prompt должен содержать от 1 до 4000 символов")
+	}
+	if math.IsNaN(result.Temperature) || math.IsInf(result.Temperature, 0) || result.Temperature < 0 || result.Temperature > 2 {
+		return result, errors.New("temperature должна быть числом от 0 до 2")
+	}
+	return result, nil
+}
+
+func temperatureErrorStatus(err error) int {
+	if errors.Is(err, errUnsupportedMediaType) {
+		return http.StatusUnsupportedMediaType
+	}
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		return http.StatusRequestEntityTooLarge
+	}
+	return http.StatusBadRequest
+}
+
+func writeTemperatureJSON(writer http.ResponseWriter, status int, value any) {
+	writer.Header().Set("Cache-Control", "no-store")
+	writeJSON(writer, status, value)
+}
+
+func writeTemperatureError(writer http.ResponseWriter, status int) {
+	message := "Проверьте prompt и температуру от 0 до 2."
+	if status == http.StatusBadGateway {
+		message = "Сервис временно недоступен. Повторите запрос позже."
+	}
+	writeTemperatureJSON(writer, status, map[string]string{"error": message})
 }
 
 type algorithmRequest struct {

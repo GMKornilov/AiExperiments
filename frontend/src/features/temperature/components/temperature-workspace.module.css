@@ -1,0 +1,35 @@
+.workspace { display: grid; min-width: 0; gap: 1.4rem; }
+.composer, .responsePanel { min-width: 0; padding: clamp(1.25rem, 4vw, 2.2rem); border: 1px solid var(--color-line); border-radius: 20px; background: linear-gradient(145deg, rgb(62 37 27 / 94%), rgb(35 19 14 / 96%)); box-shadow: var(--shadow-card); }
+.sectionHeading h2, .answerHeading h2, .emptyState h2, .errorState h2 { margin: 0; font-size: clamp(1.45rem, 4vw, 2rem); font-weight: 500; letter-spacing: -0.035em; }
+.sectionHeading p { margin: .4rem 0 1.8rem; color: var(--color-muted); }
+.fieldLabel, .temperatureControl legend, .numberLabel { display: block; margin-bottom: .55rem; color: var(--color-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .72rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.composer textarea, .temperatureControl input { box-sizing: border-box; width: 100%; border: 1px solid var(--color-line); border-radius: 12px; color: var(--color-ink); background: rgb(14 7 5 / 48%); line-height: 1.5; }
+.composer textarea { min-height: 8.4rem; padding: 1rem 1.1rem; resize: vertical; }
+.composer textarea::placeholder { color: #9c7d63; }
+.composer textarea:focus-visible, .temperatureControl input:focus-visible, .quickChoice:focus-visible, .quickChoiceActive:focus-visible, .formFooter button:focus-visible, .retryButton:focus-visible { outline: 3px solid var(--color-accent-light); outline-offset: 2px; }
+.hint { margin: .65rem 0 0; color: var(--color-muted); font-size: .83rem; }
+.temperatureControl { margin: 1.8rem 0 0; padding: 0; border: 0; }
+.quickChoices { display: flex; flex-wrap: wrap; gap: .5rem; }
+.quickChoice, .quickChoiceActive { padding: .55rem .9rem; border: 1px solid var(--color-line); border-radius: 9px; color: var(--color-muted); background: rgb(19 10 7 / 52%); font: 700 .9rem ui-monospace, SFMono-Regular, Menlo, monospace; }
+.quickChoiceActive { color: #2a160b; border-color: var(--color-accent); background: var(--color-accent); }
+.numberLabel { margin-top: 1rem; }
+.temperatureControl input { max-width: 11rem; padding: .7rem .8rem; }
+.validationError { margin: .7rem 0 0; color: var(--color-danger); line-height: 1.5; }
+.formFooter { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: 1.2rem; }
+.formFooter .hint { margin: 0; }
+.formFooter button, .retryButton { display: inline-flex; align-items: center; gap: .8rem; padding: .73rem 1rem; border: 0; border-radius: 10px; color: #25140a; background: var(--color-accent); font-weight: 700; white-space: nowrap; }
+.formFooter button:hover:not(:disabled), .retryButton:hover { background: var(--color-accent-light); transform: translateY(-1px); }
+.responsePanel { min-height: 230px; }
+.emptyState, .loadingState { display: grid; min-height: 180px; place-items: center; align-content: center; text-align: center; }
+.emptyState p:not(.emptyMark), .errorState > p:last-of-type { max-width: 480px; margin: .7rem 0 0; color: var(--color-muted); line-height: 1.5; }
+.emptyMark { display: grid; width: 3.25rem; height: 3.25rem; margin: 0 0 1rem; place-items: center; border-radius: 50%; color: var(--color-accent); background: rgb(231 166 93 / 10%); font: 700 .82rem ui-monospace, SFMono-Regular, Menlo, monospace; }
+.loadingState { grid-auto-flow: column; gap: .75rem; color: var(--color-muted); }
+.loader { width: 1.25rem; height: 1.25rem; border: 2px solid rgb(231 166 93 / 25%); border-top-color: var(--color-accent); border-radius: 50%; animation: spin 750ms linear infinite; }
+.answerHeading { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; margin-bottom: 1.5rem; }
+.answerHeading p, .eyebrow { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .72rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+.answerHeading p { color: var(--color-accent); }
+.eyebrow { color: var(--color-danger); }
+.answer { font-size: 1.07rem; line-height: 1.65; overflow-wrap: anywhere; }
+.retryButton { margin-top: 1.25rem; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 620px) { .formFooter { align-items: flex-end; flex-direction: column; } .formFooter .hint { align-self: flex-start; } }

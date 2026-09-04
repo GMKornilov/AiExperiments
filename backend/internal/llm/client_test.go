@@ -55,6 +55,29 @@ func TestClientChatSendsFreeRequest(t *testing.T) {
 	}
 }
 
+func TestClientChatWithTemperatureSendsOneUserMessage(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]json.RawMessage
+		decodeRequest(t, request, &body)
+		if _, exists := body["response_format"]; exists {
+			t.Error("temperature request unexpectedly has response_format")
+		}
+		assertMessages(t, body["messages"], []message{{Role: "user", Content: "Придумай слоган"}})
+		var value float64
+		if err := json.Unmarshal(body["temperature"], &value); err != nil || value != 1.2 {
+			t.Errorf("temperature = %s (%v), want 1.2", body["temperature"], err)
+		}
+		writeResponse(t, writer, " ответ ")
+	}))
+	defer server.Close()
+
+	answer, err := NewClient(server.URL, "test-key", time.Second).ChatWithTemperature(context.Background(), "test-model", "Придумай слоган", 1.2)
+	if err != nil || answer != "ответ" {
+		t.Errorf("ChatWithTemperature() = %q, %v", answer, err)
+	}
+}
+
 func TestClientChatControlledSendsDeepSeekJSONMode(t *testing.T) {
 	t.Parallel()
 	schema := json.RawMessage(baristaSchema)
@@ -156,6 +179,10 @@ func TestClientRejectsInvalidArguments(t *testing.T) {
 	}{
 		{name: "empty model", call: func() error { _, err := client.Chat(context.Background(), " ", "prompt"); return err }},
 		{name: "empty prompt", call: func() error { _, err := client.Chat(context.Background(), "model", " "); return err }},
+		{name: "temperature out of range", call: func() error {
+			_, err := client.ChatWithTemperature(context.Background(), "model", "prompt", 2.1)
+			return err
+		}},
 		{name: "empty free system prompt", call: func() error {
 			_, err := client.ChatWithSystemPrompt(context.Background(), "model", " ", "prompt")
 			return err
