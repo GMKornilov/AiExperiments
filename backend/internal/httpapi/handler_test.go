@@ -23,6 +23,21 @@ type fakeChatService struct {
 	prompt string
 }
 
+type fakeTemperatureService struct {
+	calls       int
+	prompt      string
+	temperature float64
+	answer      string
+	err         error
+}
+
+func (s *fakeTemperatureService) Complete(_ context.Context, prompt string, temperature float64) (string, error) {
+	s.calls++
+	s.prompt = prompt
+	s.temperature = temperature
+	return s.answer, s.err
+}
+
 func (s *fakeChatService) Chat(_ context.Context, mode barista.Mode, prompt string) (string, error) {
 	s.calls++
 	s.mode = mode
@@ -158,6 +173,83 @@ func TestChatHandlerReturnsBadGatewayForServiceFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTemperatureHandlerNormalizesRequestAndResponse(t *testing.T) {
+	service := &fakeTemperatureService{answer: "  Ответ модели  "}
+	handler := NewHandlerWithTemperature(&fakeChatService{}, nil, service)
+	response := postTemperature(handler, `{"prompt":"  Придумай слоган  ","temperature":0.7}`, "application/json")
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", response.Code, response.Body.String())
+	}
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", response.Header().Get("Cache-Control"))
+	}
+	if service.calls != 1 || service.prompt != "Придумай слоган" || service.temperature != 0.7 {
+		t.Errorf("service call = %d/%q/%v", service.calls, service.prompt, service.temperature)
+	}
+	var body temperatureResponse
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Answer != "Ответ модели" {
+		t.Errorf("answer = %q, want normalized answer", body.Answer)
+	}
+}
+
+func TestTemperatureHandlerRejectsInvalidRequestsWithoutServiceCall(t *testing.T) {
+	tooLong := strings.Repeat("я", maxPromptRunes+1)
+	tooLarge := strings.Repeat("x", maxRequestBody+1)
+	tests := []struct {
+		name        string
+		payload     string
+		contentType string
+		wantStatus  int
+	}{
+		{name: "non JSON", payload: "text", contentType: "text/plain", wantStatus: http.StatusUnsupportedMediaType},
+		{name: "empty prompt", payload: `{"prompt":"  ","temperature":0}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "long prompt", payload: `{"prompt":"` + tooLong + `","temperature":0}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "unknown field", payload: `{"prompt":"x","temperature":0,"mode":"free"}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "missing field", payload: `{"prompt":"x"}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "string temperature", payload: `{"prompt":"x","temperature":"0.7"}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "null temperature", payload: `{"prompt":"x","temperature":null}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "out of range", payload: `{"prompt":"x","temperature":2.1}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "second document", payload: `{"prompt":"x","temperature":0} {}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "too large", payload: `{"prompt":"` + tooLarge + `","temperature":0}`, contentType: "application/json", wantStatus: http.StatusRequestEntityTooLarge},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := &fakeTemperatureService{answer: "unexpected"}
+			response := postTemperature(NewHandlerWithTemperature(&fakeChatService{}, nil, service), test.payload, test.contentType)
+			if response.Code != test.wantStatus || service.calls != 0 {
+				t.Errorf("status/calls = %d/%d, want %d/0", response.Code, service.calls, test.wantStatus)
+			}
+			if response.Header().Get("Cache-Control") != "no-store" {
+				t.Errorf("Cache-Control = %q, want no-store", response.Header().Get("Cache-Control"))
+			}
+			if strings.Contains(response.Body.String(), "unexpected") {
+				t.Errorf("error response leaks service details: %s", response.Body.String())
+			}
+		})
+	}
+}
+
+func TestTemperatureHandlerHidesServiceFailure(t *testing.T) {
+	secret := "https://private.example Bearer test-secret"
+	service := &fakeTemperatureService{err: errors.New(secret)}
+	response := postTemperature(NewHandlerWithTemperature(&fakeChatService{}, nil, service), `{"prompt":"x","temperature":1.2}`, "application/json")
+	if response.Code != http.StatusBadGateway || strings.Contains(response.Body.String(), secret) {
+		t.Errorf("status/body = %d/%s", response.Code, response.Body.String())
+	}
+}
+
+func postTemperature(handler http.Handler, payload, contentType string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodPost, "/api/temperature", bytes.NewBufferString(payload))
+	request.Header.Set("Content-Type", contentType)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
 }
 
 func postChat(handler http.Handler, payload string) *httptest.ResponseRecorder {
