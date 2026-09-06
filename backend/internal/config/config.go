@@ -17,8 +17,10 @@ import (
 
 const (
 	defaultRequestTimeout          = 30 * time.Second
+	defaultModelRequestTimeout     = 180 * time.Second
 	defaultAlgorithmRequestTimeout = 180 * time.Second
 	maxAlgorithmRequestTimeout     = 180 * time.Second
+	defaultKimiBaseURL             = "https://api.moonshot.ai/v1"
 )
 
 const (
@@ -33,7 +35,10 @@ type Config struct {
 	BaseURL                    string             `yaml:"base_url"`
 	APIKey                     string             `yaml:"api_key"`
 	Model                      string             `yaml:"model"`
+	KimiBaseURL                string             `yaml:"kimi_base_url"`
+	KimiAPIKey                 string             `yaml:"kimi_api_key"`
 	RequestTimeout             time.Duration      `yaml:"request_timeout"`
+	ModelRequestTimeout        time.Duration      `yaml:"model_request_timeout"`
 	AlgorithmRequestTimeout    time.Duration      `yaml:"algorithm_request_timeout"`
 	FreeSystemPromptPath       string             `yaml:"free_system_prompt_path"`
 	ControlledSystemPromptPath string             `yaml:"controlled_system_prompt_path"`
@@ -63,6 +68,12 @@ func Load(path string) (Config, error) {
 	if cfg.RequestTimeout == 0 {
 		cfg.RequestTimeout = defaultRequestTimeout
 	}
+	if _, configured := configuredFields["model_request_timeout"]; !configured {
+		cfg.ModelRequestTimeout = defaultModelRequestTimeout
+	}
+	if strings.TrimSpace(cfg.KimiBaseURL) == "" {
+		cfg.KimiBaseURL = defaultKimiBaseURL
+	}
 	if _, configured := configuredFields["algorithm_request_timeout"]; !configured {
 		cfg.AlgorithmRequestTimeout = defaultAlgorithmRequestTimeout
 	}
@@ -90,6 +101,9 @@ func Load(path string) (Config, error) {
 
 // Validate verifies that all required settings have useful values.
 func (c Config) Validate() error {
+	if c.ModelRequestTimeout <= 0 || c.ModelRequestTimeout > defaultModelRequestTimeout {
+		return fmt.Errorf("model_request_timeout должен быть больше нуля и не превышать %s", defaultModelRequestTimeout)
+	}
 	if strings.TrimSpace(c.BaseURL) == "" {
 		return fmt.Errorf("base_url не должен быть пустым")
 	}

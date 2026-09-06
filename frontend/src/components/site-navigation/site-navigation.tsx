@@ -1,7 +1,7 @@
 import Link from "next/link";
 import styles from "./site-navigation.module.css";
 
-export function SiteNavigation({ active }: { active: "barista" | "algorithms" | "temperature" }) {
+export function SiteNavigation({ active }: { active: "barista" | "algorithms" | "temperature" | "models" }) {
   return <nav className={styles.navigation} aria-label="Основная навигация">
     <Link aria-label="Бариста, Неделя 1, Задание 2" className={active === "barista" ? styles.active : styles.link} aria-current={active === "barista" ? "page" : undefined} href="/">
       <span className={styles.title}>Бариста</span>
@@ -14,6 +14,10 @@ export function SiteNavigation({ active }: { active: "barista" | "algorithms" | 
     <Link aria-label="Температура, Неделя 1, задание 4" className={active === "temperature" ? styles.active : styles.link} aria-current={active === "temperature" ? "page" : undefined} href="/temperature">
       <span className={styles.title}>Температура</span>
       <span className={styles.subtitle}>Неделя 1, задание 4</span>
+    </Link>
+    <Link aria-label="Модели, Неделя 1, задание 5" className={active === "models" ? styles.active : styles.link} aria-current={active === "models" ? "page" : undefined} href="/models">
+      <span className={styles.title}>Модели</span>
+      <span className={styles.subtitle}>Неделя 1, задание 5</span>
     </Link>
   </nav>;
 }

@@ -1,9 +1,13 @@
 # DeepSeek / OpenAI-compatible API: базовый URL без /chat/completions.
 base_url: "https://api.deepseek.com"
 api_key: "вставьте_ваш_ключ"
-model: "deepseek-chat"
+model: "deepseek-v4-flash"
+kimi_base_url: "https://api.moonshot.ai/v1"
+kimi_api_key: ""
 # Максимальное время одного API-запроса.
 request_timeout: 30s
+# Сравнение моделей: больше нуля, максимум 180s; BFF ждёт 190s.
+model_request_timeout: 180s
 # Максимальное время одного LLM-запроса алгоритмов; default: 180s, максимум: 180s.
 algorithm_request_timeout: 180s
 # Каталог шаблонов алгоритмических prompts относительно config.yaml; default: prompts.

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -75,6 +76,99 @@ func TestClientChatWithTemperatureSendsOneUserMessage(t *testing.T) {
 	answer, err := NewClient(server.URL, "test-key", time.Second).ChatWithTemperature(context.Background(), "test-model", "Придумай слоган", 1.2)
 	if err != nil || answer != "ответ" {
 		t.Errorf("ChatWithTemperature() = %q, %v", answer, err)
+	}
+}
+
+func TestClientChatWithTemperatureMetricsReturnsUsage(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"answer"}}],"usage":{"prompt_tokens":12,"completion_tokens":34,"total_tokens":46,"prompt_tokens_details":{"cached_tokens":5}}}`))
+	}))
+	defer server.Close()
+
+	completion, err := NewClient(server.URL, "test-key", time.Second).ChatWithTemperatureMetrics(context.Background(), "test-model", "prompt", 0.7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Completion{Answer: "answer", Usage: Usage{PromptTokens: 12, CompletionTokens: 34, TotalTokens: 46, PromptTokensDetails: PromptTokenDetails{CachedTokens: 5}}}
+	if !reflect.DeepEqual(completion, want) {
+		t.Errorf("completion = %#v, want %#v", completion, want)
+	}
+}
+
+func TestClientKimiOmitsTemperatureAndReadsCacheUsage(t *testing.T) {
+	for _, model := range []string{"kimi-k3", "kimi-k2.7-code", "kimi-k2.6"} {
+		t.Run(model, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				calls++
+				var payload map[string]json.RawMessage
+				if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+					t.Error(err)
+				}
+				wantFields := 2
+				if model == "kimi-k3" {
+					wantFields = 3
+					if string(payload["reasoning_effort"]) != `"low"` {
+						t.Error("K3 must explicitly use low reasoning")
+					}
+				}
+				if len(payload) != wantFields || string(payload["model"]) != strconv.Quote(model) || payload["temperature"] != nil || payload["thinking"] != nil {
+					t.Errorf("unexpected payload: %s", payload)
+				}
+				if request.URL.Path != "/v1/chat/completions" || request.Header.Get("Authorization") != "Bearer kimi-test-key" {
+					t.Error("incorrect endpoint or credentials")
+				}
+				writer.Header().Set("Content-Type", "application/json")
+				_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"answer"}}],"usage":{"prompt_tokens":12,"completion_tokens":34,"cached_tokens":5}}`))
+			}))
+			defer server.Close()
+			client := NewClient(server.URL+"/v1", "kimi-test-key", time.Second)
+			completion, err := client.ChatWithTemperatureMetrics(context.Background(), model, "prompt", 1)
+			if err != nil || completion.Usage.CachedTokens != 5 || completion.Answer != "answer" {
+				t.Fatalf("completion=%#v, error=%v", completion, err)
+			}
+			if _, err := client.ChatWithTemperatureMetrics(context.Background(), model, "prompt", 0.7); err == nil {
+				t.Fatal("expected fixed temperature validation")
+			}
+			if calls != 1 {
+				t.Errorf("calls=%d, want 1", calls)
+			}
+		})
+	}
+}
+
+func TestClientChatWithTemperatureMetricsRejectsMissingUsage(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writeResponse(t, writer, "answer")
+	}))
+	defer server.Close()
+
+	if _, err := NewClient(server.URL, "test-key", time.Second).ChatWithTemperatureMetrics(context.Background(), "test-model", "prompt", 0.7); err == nil {
+		t.Fatal("expected usage validation error")
+	}
+}
+
+func TestDeepSeekComparisonDisablesThinking(t *testing.T) {
+	for _, model := range []string{"deepseek-v4-flash", "deepseek-v4-pro"} {
+		t.Run(model, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request chatRequest
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Error(err)
+				}
+				if request.Model != model || request.Thinking == nil || request.Thinking.Type != "disabled" || request.ReasoningEffort != "" || request.Temperature == nil || *request.Temperature != 1 {
+					t.Errorf("unexpected settings: %+v", request)
+				}
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"answer"}}],"usage":{"prompt_tokens":10,"completion_tokens":20}}`))
+			}))
+			defer server.Close()
+			if _, err := NewClient(server.URL, "test-key", time.Second).ChatWithTemperatureMetrics(context.Background(), model, "prompt", 1); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
