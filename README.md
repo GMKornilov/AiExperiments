@@ -2,6 +2,9 @@
 
 AI-бариста доступен как интерактивный CLI и web-интерфейс. Каждый пользовательский запрос отправляется ровно один раз в DeepSeek / OpenAI-совместимый API в режиме свободного текста или контролируемого JSON-ответа.
 
+Web-интерфейс также содержит отдельные задания для алгоритмических prompt-подходов,
+управления температурой и выбора актуальной модели DeepSeek вместе с температурой.
+
 ## Локальный запуск
 
 1. Создайте локальный конфиг и укажите ключ:
@@ -10,7 +13,7 @@ AI-бариста доступен как интерактивный CLI и web-
    cp backend/config.example.yaml backend/config.yaml
    ```
 
-2. Отредактируйте `config.yaml`: заполните `api_key`; при необходимости измените `base_url`, `model` и пути к prompt/schema. Отдельные пути `free_system_prompt_path` и `controlled_system_prompt_path` позволяют менять поведение режимов независимо; по умолчанию используются `prompts/barista-free-system.txt`, `prompts/barista-controlled-system.txt` и `schemas/barista-response.schema.json`. Шаблоны алгоритмов находятся в `algorithms_prompts_dir` (по умолчанию `prompts`) и загружаются при старте.
+2. Отредактируйте `config.yaml`: заполните DeepSeek `api_key`; для вкладки «Модели» также можно заполнить `kimi_api_key`. При необходимости измените `base_url`, `kimi_base_url`, `model` и пути к prompt/schema. В примере используется актуальная `deepseek-v4-flash`. Отдельные пути `free_system_prompt_path` и `controlled_system_prompt_path` позволяют менять поведение режимов независимо; по умолчанию используются `prompts/barista-free-system.txt`, `prompts/barista-controlled-system.txt` и `schemas/barista-response.schema.json`. Шаблоны алгоритмов находятся в `algorithms_prompts_dir` (по умолчанию `prompts`) и загружаются при старте.
 
 3. Запустите в нужном режиме:
 
@@ -49,6 +52,8 @@ npm run dev
 Откройте [http://localhost:3000](http://localhost:3000). Каждый submit выполняет ровно один API-вызов. API-ключ и prompts остаются только в Go API-сервере.
 
 ## Docker
+
+Диагностика ошибок моделей: [как читать логи LLM](docs/llm-logs.md).
 
 Основной способ запустить весь стек — Compose:
 

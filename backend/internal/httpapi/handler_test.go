@@ -13,6 +13,7 @@ import (
 
 	"aichallenge/week_1/task_1/internal/algorithms"
 	"aichallenge/week_1/task_1/internal/barista"
+	"aichallenge/week_1/task_1/internal/modeltemperature"
 )
 
 type fakeChatService struct {
@@ -29,6 +30,25 @@ type fakeTemperatureService struct {
 	temperature float64
 	answer      string
 	err         error
+}
+
+type fakeModelTemperatureService struct {
+	calls       int
+	prompt      string
+	temperature float64
+	provider    modeltemperature.Provider
+	model       modeltemperature.Model
+	result      modeltemperature.Result
+	err         error
+}
+
+func (s *fakeModelTemperatureService) Complete(_ context.Context, prompt string, temperature float64, provider modeltemperature.Provider, model modeltemperature.Model) (modeltemperature.Result, error) {
+	s.calls++
+	s.prompt = prompt
+	s.temperature = temperature
+	s.provider = provider
+	s.model = model
+	return s.result, s.err
 }
 
 func (s *fakeTemperatureService) Complete(_ context.Context, prompt string, temperature float64) (string, error) {
@@ -246,6 +266,76 @@ func TestTemperatureHandlerHidesServiceFailure(t *testing.T) {
 
 func postTemperature(handler http.Handler, payload, contentType string) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(http.MethodPost, "/api/temperature", bytes.NewBufferString(payload))
+	request.Header.Set("Content-Type", contentType)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func TestModelTemperatureHandlerRoutesSelectedModel(t *testing.T) {
+	metrics := modeltemperature.Metrics{DurationMilliseconds: 1234, InputTokens: 12, OutputTokens: 34, CostUSD: 0.0001}
+	service := &fakeModelTemperatureService{result: modeltemperature.Result{Answer: "  Ответ Pro  ", Metrics: metrics}}
+	handler := NewHandlerWithModelTemperature(&fakeChatService{}, nil, &fakeTemperatureService{}, service)
+	response := postModelTemperature(handler, `{"prompt":"  Слоган  ","temperature":1.2,"provider":"deepseek","model":"deepseek-v4-pro"}`, "application/json")
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", response.Code, response.Body.String())
+	}
+	if service.calls != 1 || service.prompt != "Слоган" || service.temperature != 1.2 || service.provider != modeltemperature.ProviderDeepSeek || service.model != modeltemperature.ModelV4Pro {
+		t.Errorf("service call = %d/%q/%v/%q/%q", service.calls, service.prompt, service.temperature, service.provider, service.model)
+	}
+	var body modelTemperatureResponse
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Answer != "Ответ Pro" || body.Metrics != metrics {
+		t.Errorf("body = %#v", body)
+	}
+}
+
+func TestModelTemperatureHandlerRejectsInvalidRequests(t *testing.T) {
+	tests := []struct {
+		name        string
+		payload     string
+		contentType string
+		wantStatus  int
+	}{
+		{name: "legacy model", payload: `{"prompt":"x","temperature":0.7,"provider":"deepseek","model":"deepseek-chat"}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "unknown provider", payload: `{"prompt":"x","temperature":0.7,"provider":"other","model":"kimi-k3"}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "provider model mismatch", payload: `{"prompt":"x","temperature":0.7,"provider":"kimi","model":"deepseek-v4-flash"}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "missing model", payload: `{"prompt":"x","temperature":0.7,"provider":"kimi"}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "extra field", payload: `{"prompt":"x","temperature":0.7,"provider":"kimi","model":"kimi-k3","mode":"free"}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "Kimi temperature", payload: `{"prompt":"x","temperature":1.2,"provider":"kimi","model":"kimi-k3"}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "Kimi lower temperature", payload: `{"prompt":"x","temperature":0.7,"provider":"kimi","model":"kimi-k3"}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "non JSON", payload: "text", contentType: "text/plain", wantStatus: http.StatusUnsupportedMediaType},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := &fakeModelTemperatureService{result: modeltemperature.Result{Answer: "unexpected"}}
+			handler := NewHandlerWithModelTemperature(&fakeChatService{}, nil, &fakeTemperatureService{}, service)
+			response := postModelTemperature(handler, test.payload, test.contentType)
+			if response.Code != test.wantStatus || service.calls != 0 {
+				t.Errorf("status/calls = %d/%d, want %d/0", response.Code, service.calls, test.wantStatus)
+			}
+			if response.Header().Get("Cache-Control") != "no-store" {
+				t.Errorf("Cache-Control = %q", response.Header().Get("Cache-Control"))
+			}
+		})
+	}
+}
+
+func TestModelTemperatureHandlerHidesServiceFailure(t *testing.T) {
+	secret := "https://private.example Bearer test-secret"
+	service := &fakeModelTemperatureService{err: errors.New(secret)}
+	handler := NewHandlerWithModelTemperature(&fakeChatService{}, nil, &fakeTemperatureService{}, service)
+	response := postModelTemperature(handler, `{"prompt":"x","temperature":0,"provider":"deepseek","model":"deepseek-v4-flash-vision-exp"}`, "application/json")
+	if response.Code != http.StatusBadGateway || strings.Contains(response.Body.String(), secret) {
+		t.Errorf("status/body = %d/%s", response.Code, response.Body.String())
+	}
+}
+
+func postModelTemperature(handler http.Handler, payload, contentType string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodPost, "/api/model-temperature", bytes.NewBufferString(payload))
 	request.Header.Set("Content-Type", contentType)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)

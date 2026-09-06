@@ -1,6 +1,8 @@
 services:
   barista-api:
     build: ./backend
+    environment:
+      LLM_LOG_PAYLOADS: ${LLM_LOG_PAYLOADS:-false}
     volumes:
       - ./backend/config.yaml:/app/config.yaml:ro
     healthcheck:

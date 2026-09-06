@@ -36,8 +36,14 @@ func TestLoadUsesDefaultsAndLoadsTwoPrompts(t *testing.T) {
 	if cfg.RequestTimeout != 30*time.Second {
 		t.Errorf("RequestTimeout = %v, want 30s", cfg.RequestTimeout)
 	}
+	if cfg.ModelRequestTimeout != 180*time.Second {
+		t.Errorf("ModelRequestTimeout = %v, want 180s", cfg.ModelRequestTimeout)
+	}
 	if cfg.AlgorithmRequestTimeout != 180*time.Second {
 		t.Errorf("AlgorithmRequestTimeout = %v, want 180s", cfg.AlgorithmRequestTimeout)
+	}
+	if cfg.KimiBaseURL != defaultKimiBaseURL {
+		t.Errorf("KimiBaseURL = %q, want %q", cfg.KimiBaseURL, defaultKimiBaseURL)
 	}
 	if cfg.FreeSystemPromptPath != defaultFreeSystemPromptPath {
 		t.Errorf("FreeSystemPromptPath = %q, want %q", cfg.FreeSystemPromptPath, defaultFreeSystemPromptPath)
@@ -256,6 +262,7 @@ func TestLoadUsesCustomAlgorithmPromptsDirectoryRelativeToConfig(t *testing.T) {
 func TestConfigValidateRejectsInvalidArguments(t *testing.T) {
 	t.Parallel()
 	valid := Config{
+		ModelRequestTimeout:        180 * time.Second,
 		BaseURL:                    "https://example.com/v1",
 		APIKey:                     "test-key",
 		Model:                      "test-model",
@@ -274,6 +281,8 @@ func TestConfigValidateRejectsInvalidArguments(t *testing.T) {
 		{name: "empty API key", edit: func(cfg *Config) { cfg.APIKey = " " }},
 		{name: "empty model", edit: func(cfg *Config) { cfg.Model = " " }},
 		{name: "non-positive timeout", edit: func(cfg *Config) { cfg.RequestTimeout = 0 }},
+		{name: "non-positive model timeout", edit: func(cfg *Config) { cfg.ModelRequestTimeout = 0 }},
+		{name: "model timeout over maximum", edit: func(cfg *Config) { cfg.ModelRequestTimeout = 181 * time.Second }},
 		{name: "non-positive algorithm timeout", edit: func(cfg *Config) { cfg.AlgorithmRequestTimeout = 0 }},
 		{name: "algorithm timeout over maximum", edit: func(cfg *Config) { cfg.AlgorithmRequestTimeout = maxAlgorithmRequestTimeout + time.Nanosecond }},
 		{name: "empty free prompt path", edit: func(cfg *Config) { cfg.FreeSystemPromptPath = " " }},

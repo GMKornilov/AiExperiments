@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"math"
 	"mime"
 	"net/http"
@@ -16,6 +17,8 @@ import (
 
 	"aichallenge/week_1/task_1/internal/algorithms"
 	"aichallenge/week_1/task_1/internal/barista"
+	"aichallenge/week_1/task_1/internal/llm"
+	"aichallenge/week_1/task_1/internal/modeltemperature"
 )
 
 const (
@@ -39,6 +42,11 @@ type TemperatureService interface {
 	Complete(context.Context, string, float64) (string, error)
 }
 
+// ModelTemperatureService is the one-shot completion capability with a selected model.
+type ModelTemperatureService interface {
+	Complete(context.Context, string, float64, modeltemperature.Provider, modeltemperature.Model) (modeltemperature.Result, error)
+}
+
 type chatRequest struct {
 	Mode   string `json:"mode"`
 	Prompt string `json:"prompt"`
@@ -56,15 +64,20 @@ func NewHandler(service ChatService, algorithmServices ...AlgorithmService) http
 	if len(algorithmServices) > 0 {
 		algorithmService = algorithmServices[0]
 	}
-	return newHandler(service, algorithmService, nil)
+	return newHandler(service, algorithmService, nil, nil)
 }
 
 // NewHandlerWithTemperature creates an API handler that also serves POST /api/temperature.
 func NewHandlerWithTemperature(service ChatService, algorithmService AlgorithmService, temperatureService TemperatureService) http.Handler {
-	return newHandler(service, algorithmService, temperatureService)
+	return newHandler(service, algorithmService, temperatureService, nil)
 }
 
-func newHandler(service ChatService, algorithmService AlgorithmService, temperatureService TemperatureService) http.Handler {
+// NewHandlerWithModelTemperature creates an API handler with both parameter-control endpoints.
+func NewHandlerWithModelTemperature(service ChatService, algorithmService AlgorithmService, temperatureService TemperatureService, modelTemperatureService ModelTemperatureService) http.Handler {
+	return newHandler(service, algorithmService, temperatureService, modelTemperatureService)
+}
+
+func newHandler(service ChatService, algorithmService AlgorithmService, temperatureService TemperatureService, modelTemperatureService ModelTemperatureService) http.Handler {
 	chat := chatHandler(service)
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
@@ -93,10 +106,109 @@ func newHandler(service ChatService, algorithmService AlgorithmService, temperat
 				return
 			}
 			temperatureHandler(temperatureService).ServeHTTP(writer, request)
+		case "/api/model-temperature":
+			writer.Header().Set("Cache-Control", "no-store")
+			if request.Method != http.MethodPost {
+				methodNotAllowed(writer, http.MethodPost)
+				return
+			}
+			modelTemperatureHandler(modelTemperatureService).ServeHTTP(writer, request)
 		default:
 			http.NotFound(writer, request)
 		}
 	})
+}
+
+type modelTemperatureRequest struct {
+	Prompt      string                    `json:"prompt"`
+	Temperature float64                   `json:"temperature"`
+	Provider    modeltemperature.Provider `json:"provider"`
+	Model       modeltemperature.Model    `json:"model"`
+}
+
+type modelTemperatureResponse struct {
+	Answer  string                   `json:"answer"`
+	Metrics modeltemperature.Metrics `json:"metrics"`
+}
+
+func modelTemperatureHandler(service ModelTemperatureService) http.HandlerFunc {
+	return func(writer http.ResponseWriter, request *http.Request) {
+		ctx := llm.WithRequestID(request.Context(), request.Header.Get("X-Request-ID"))
+		request = request.WithContext(ctx)
+		writer.Header().Set("X-Request-ID", llm.RequestID(ctx))
+		payload, err := decodeModelTemperatureRequest(writer, request)
+		if err != nil {
+			slog.Warn("model_request.rejected", "request_id", llm.RequestID(ctx), "http_status", temperatureErrorStatus(err))
+			writeModelTemperatureError(writer, temperatureErrorStatus(err))
+			return
+		}
+		if service == nil {
+			slog.Warn("model_request.finish", "request_id", llm.RequestID(ctx), "reason", "service_not_configured")
+			writeModelTemperatureError(writer, http.StatusBadGateway)
+			return
+		}
+
+		result, err := service.Complete(request.Context(), payload.Prompt, payload.Temperature, payload.Provider, payload.Model)
+		if err != nil || strings.TrimSpace(result.Answer) == "" {
+			slog.Warn("model_request.finish", "request_id", llm.RequestID(ctx), "model", payload.Model, "reason", "service_error")
+			writeModelTemperatureError(writer, http.StatusBadGateway)
+			return
+		}
+		slog.Info("model_request.finish", "request_id", llm.RequestID(ctx), "model", payload.Model, "reason", "success",
+			"input_tokens", result.Metrics.InputTokens, "output_tokens", result.Metrics.OutputTokens, "cost_usd", result.Metrics.CostUSD)
+		writeTemperatureJSON(writer, http.StatusOK, modelTemperatureResponse{Answer: strings.TrimSpace(result.Answer), Metrics: result.Metrics})
+	}
+}
+
+func decodeModelTemperatureRequest(writer http.ResponseWriter, request *http.Request) (modelTemperatureRequest, error) {
+	var result modelTemperatureRequest
+	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(mediaType, "application/json") {
+		return result, errUnsupportedMediaType
+	}
+	_ = http.NewResponseController(writer).SetReadDeadline(time.Now().Add(10 * time.Second))
+	request.Body = http.MaxBytesReader(writer, request.Body, maxRequestBody)
+
+	decoder := json.NewDecoder(request.Body)
+	var fields map[string]json.RawMessage
+	if err := decoder.Decode(&fields); err != nil {
+		return result, err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return result, errors.New("тело должно содержать ровно один JSON-объект")
+	}
+	if len(fields) != 4 {
+		return result, errors.New("тело должно содержать только prompt, temperature, provider и model")
+	}
+	prompt, hasPrompt := fields["prompt"]
+	temperatureValue, hasTemperature := fields["temperature"]
+	model, hasModel := fields["model"]
+	provider, hasProvider := fields["provider"]
+	if !hasPrompt || !hasTemperature || !hasProvider || !hasModel || strings.TrimSpace(string(temperatureValue)) == "null" || json.Unmarshal(prompt, &result.Prompt) != nil || json.Unmarshal(temperatureValue, &result.Temperature) != nil || json.Unmarshal(provider, &result.Provider) != nil || json.Unmarshal(model, &result.Model) != nil {
+		return result, errors.New("некорректные поля запроса")
+	}
+	result.Prompt = strings.TrimSpace(result.Prompt)
+	if result.Prompt == "" || utf8.RuneCountInString(result.Prompt) > maxPromptRunes {
+		return result, errors.New("prompt должен содержать от 1 до 4000 символов")
+	}
+	if !modeltemperature.IsSupportedProvider(result.Provider) {
+		return result, errors.New("провайдер не поддерживается")
+	}
+	if !modeltemperature.IsSupportedTemperature(result.Provider, result.Temperature) {
+		return result, errors.New("temperature вне диапазона провайдера")
+	}
+	if !modeltemperature.IsSupportedModel(result.Provider, result.Model) {
+		return result, errors.New("модель не поддерживается")
+	}
+	return result, nil
+}
+
+func writeModelTemperatureError(writer http.ResponseWriter, status int) {
+	message := "Проверьте prompt, провайдера, модель и температуру."
+	if status == http.StatusBadGateway {
+		message = "Сервис временно недоступен. Повторите запрос позже."
+	}
+	writeTemperatureJSON(writer, status, map[string]string{"error": message})
 }
 
 type temperatureRequest struct {

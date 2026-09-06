@@ -18,6 +18,7 @@ import (
 	"aichallenge/week_1/task_1/internal/config"
 	"aichallenge/week_1/task_1/internal/httpapi"
 	"aichallenge/week_1/task_1/internal/llm"
+	"aichallenge/week_1/task_1/internal/modeltemperature"
 	"aichallenge/week_1/task_1/internal/temperature"
 )
 
@@ -42,10 +43,16 @@ func main() {
 func newHandler(cfg config.Config) http.Handler {
 	baristaClient := llm.NewClient(cfg.BaseURL, cfg.APIKey, cfg.RequestTimeout)
 	algorithmsClient := llm.NewClient(cfg.BaseURL, cfg.APIKey, cfg.AlgorithmRequestTimeout)
-	return httpapi.NewHandlerWithTemperature(
+	modelTemperatureClient := llm.NewClient(cfg.BaseURL, cfg.APIKey, cfg.ModelRequestTimeout)
+	var kimiClient modeltemperature.Client
+	if strings.TrimSpace(cfg.KimiAPIKey) != "" {
+		kimiClient = llm.NewClient(cfg.KimiBaseURL, cfg.KimiAPIKey, cfg.ModelRequestTimeout)
+	}
+	return httpapi.NewHandlerWithModelTemperature(
 		barista.NewServiceWithClient(cfg, baristaClient),
 		algorithms.NewService(algorithmsClient, cfg.Model, cfg.AlgorithmRequestTimeout, cfg.AlgorithmPrompts),
 		temperature.NewService(cfg),
+		modeltemperature.NewService(modelTemperatureClient, kimiClient),
 	)
 }
 

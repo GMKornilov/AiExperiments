@@ -37,3 +37,20 @@ trim должен содержать от 1 до 4 000 Unicode-символов,
 Completions вызов с одной пользовательской репликой и переданной температурой,
 без system prompt, JSON Schema и `response_format`. Этот маршрут не принимает
 `mode`, `statement` или `language` и использует общий `request_timeout`.
+
+`POST /api/model-temperature` принимает JSON-снимок
+`{"prompt":"Придумай короткий слоган","temperature":0.7,"provider":"deepseek","model":"deepseek-v4-flash"}`.
+Кроме правил `/api/temperature`, маршрут требует согласованную пару provider/model.
+Для DeepSeek доступны
+`deepseek-v4-flash`, `deepseek-v4-pro`, `deepseek-v4-flash-vision-exp` и передаёт
+выбранный идентификатор в единственный Chat Completions вызов. Для Kimi доступны
+актуальные `kimi-k3`, `kimi-k2.7-code`, `kimi-k2.6`; используются отдельные
+`kimi_base_url` и `kimi_api_key`. Ответ содержит `duration_ms`, `input_tokens`,
+`output_tokens` и рассчитанный `cost_usd`. Произвольные и устаревшие идентификаторы
+отклоняются до обращения к LLM.
+Для Kimi принимается только температура `1`; в upstream поле опускается,
+для Kimi K3 используется reasoning_effort=low (полное отключение API не поддерживает).
+DeepSeek в сравнении использует thinking.type=disabled. Для сравнения действует
+`model_request_timeout`: по умолчанию 180s, допустимо больше нуля и не более 180s;
+BFF ждёт 190s. Стоимость учитывает `usage.cached_tokens`
+и не включает налоги.

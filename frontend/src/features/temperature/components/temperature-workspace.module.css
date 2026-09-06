@@ -3,10 +3,12 @@
 .sectionHeading h2, .answerHeading h2, .emptyState h2, .errorState h2 { margin: 0; font-size: clamp(1.45rem, 4vw, 2rem); font-weight: 500; letter-spacing: -0.035em; }
 .sectionHeading p { margin: .4rem 0 1.8rem; color: var(--color-muted); }
 .fieldLabel, .temperatureControl legend, .numberLabel { display: block; margin-bottom: .55rem; color: var(--color-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .72rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
-.composer textarea, .temperatureControl input { box-sizing: border-box; width: 100%; border: 1px solid var(--color-line); border-radius: 12px; color: var(--color-ink); background: rgb(14 7 5 / 48%); line-height: 1.5; }
+.fieldLabel:not(:first-of-type) { margin-top: 1.8rem; }
+.composer textarea, .temperatureControl input, .modelSelect { box-sizing: border-box; width: 100%; border: 1px solid var(--color-line); border-radius: 12px; color: var(--color-ink); background: rgb(14 7 5 / 48%); line-height: 1.5; }
 .composer textarea { min-height: 8.4rem; padding: 1rem 1.1rem; resize: vertical; }
 .composer textarea::placeholder { color: #9c7d63; }
-.composer textarea:focus-visible, .temperatureControl input:focus-visible, .quickChoice:focus-visible, .quickChoiceActive:focus-visible, .formFooter button:focus-visible, .retryButton:focus-visible { outline: 3px solid var(--color-accent-light); outline-offset: 2px; }
+.composer textarea:focus-visible, .temperatureControl input:focus-visible, .modelSelect:focus-visible, .quickChoice:focus-visible, .quickChoiceActive:focus-visible, .formFooter button:focus-visible, .retryButton:focus-visible { outline: 3px solid var(--color-accent-light); outline-offset: 2px; }
+.modelSelect { padding: .78rem .9rem; }
 .hint { margin: .65rem 0 0; color: var(--color-muted); font-size: .83rem; }
 .temperatureControl { margin: 1.8rem 0 0; padding: 0; border: 0; }
 .quickChoices { display: flex; flex-wrap: wrap; gap: .5rem; }
@@ -30,6 +32,10 @@
 .answerHeading p { color: var(--color-accent); }
 .eyebrow { color: var(--color-danger); }
 .answer { font-size: 1.07rem; line-height: 1.65; overflow-wrap: anywhere; }
+.requestMetrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .65rem; margin: 1.8rem 0 0; }
+.requestMetrics div { min-width: 0; padding: .85rem; border: 1px solid var(--color-line); border-radius: 10px; background: rgb(14 7 5 / 35%); }
+.requestMetrics dt { color: var(--color-muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .68rem; letter-spacing: .06em; text-transform: uppercase; }
+.requestMetrics dd { margin: .4rem 0 0; color: var(--color-accent-light); font-size: 1rem; font-weight: 700; overflow-wrap: anywhere; }
 .retryButton { margin-top: 1.25rem; }
 @keyframes spin { to { transform: rotate(360deg); } }
-@media (max-width: 620px) { .formFooter { align-items: flex-end; flex-direction: column; } .formFooter .hint { align-self: flex-start; } }
+@media (max-width: 620px) { .formFooter { align-items: flex-end; flex-direction: column; } .formFooter .hint { align-self: flex-start; } .requestMetrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
