@@ -1,50 +1,24 @@
 package main
 
 import (
-	"net/http"
-	"net/http/httptest"
+	"bytes"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
-
-	"aichallenge/week_1/task_1/internal/algorithms"
-	"aichallenge/week_1/task_1/internal/config"
 )
 
-func TestNewHandlerUsesAlgorithmTimeoutIndependently(t *testing.T) {
-	provider := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		time.Sleep(30 * time.Millisecond)
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"choices":[{"message":{"content":"answer"}}]}`))
-	}))
-	defer provider.Close()
-
-	prompts, err := algorithms.NewPrompts(algorithms.PromptSources{
-		DirectSystem:               "direct {{.Language}} {{.InterfaceRule}}",
-		StepByStepSystem:           "steps {{.Language}}",
-		ExpertsSystem:              "experts {{.Language}}",
-		MetaPromptGenerationSystem: "generate {{.Language}} {{.InterfaceRule}}",
-		MetaSolutionSystem:         "solution {{.Language}}",
-		MetaSolutionUser:           "{{.Statement}} {{.GeneratedPrompt}}",
-	})
-	if err != nil {
-		t.Fatal(err)
+func TestConfigFailureLogIsStructuredAndSafe(t *testing.T) {
+	var output bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&output, nil))
+	logConfig(logger, "request-id", "failure", time.Millisecond, "config")
+	got := output.String()
+	for _, field := range []string{`"source":"backend"`, `"event":"config_read"`, `"result":"failure"`, `"correlation_id":"request-id"`, `"duration_ms":1`, `"error_category":"config"`} {
+		if !strings.Contains(got, field) {
+			t.Fatalf("log misses %s: %s", field, got)
+		}
 	}
-	handler := newHandler(config.Config{
-		BaseURL:                 provider.URL,
-		APIKey:                  "test-key",
-		Model:                   "test-model",
-		RequestTimeout:          10 * time.Millisecond,
-		AlgorithmRequestTimeout: 100 * time.Millisecond,
-		AlgorithmPrompts:        prompts,
-	})
-	request := httptest.NewRequest(http.MethodPost, "/api/algorithms/direct", strings.NewReader(`{"statement":"condition","language":"python"}`))
-	request.Header.Set("Content-Type", "application/json")
-	recorder := httptest.NewRecorder()
-
-	handler.ServeHTTP(recorder, request)
-
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body=%s", recorder.Code, http.StatusOK, recorder.Body.String())
+	if strings.Contains(got, "api_key") || strings.Contains(got, "config.yaml") {
+		t.Fatalf("unsafe detail in log: %s", got)
 	}
 }

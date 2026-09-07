@@ -1,106 +1,49 @@
-# AI-бариста: CLI и Web
+# AI-бариста
 
-AI-бариста доступен как интерактивный CLI и web-интерфейс. Каждый пользовательский запрос отправляется ровно один раз в DeepSeek / OpenAI-совместимый API в режиме свободного текста или контролируемого JSON-ответа.
-
-Web-интерфейс также содержит отдельные задания для алгоритмических prompt-подходов,
-управления температурой и выбора актуальной модели DeepSeek вместе с температурой.
+Web-чат с несколькими диалогами и памятью в ОЗУ. Браузер обращается только к
+same-origin Next.js BFF; ключ LLM, endpoint и system prompt остаются в backend.
+После перезапуска backend диалоги и журнал стираются.
 
 ## Локальный запуск
 
-1. Создайте локальный конфиг и укажите ключ:
-
-   ```sh
-   cp backend/config.example.yaml backend/config.yaml
-   ```
-
-2. Отредактируйте `config.yaml`: заполните DeepSeek `api_key`; для вкладки «Модели» также можно заполнить `kimi_api_key`. При необходимости измените `base_url`, `kimi_base_url`, `model` и пути к prompt/schema. В примере используется актуальная `deepseek-v4-flash`. Отдельные пути `free_system_prompt_path` и `controlled_system_prompt_path` позволяют менять поведение режимов независимо; по умолчанию используются `prompts/barista-free-system.txt`, `prompts/barista-controlled-system.txt` и `schemas/barista-response.schema.json`. Шаблоны алгоритмов находятся в `algorithms_prompts_dir` (по умолчанию `prompts`) и загружаются при старте.
-
-3. Запустите в нужном режиме:
-
-   ```sh
-   cd backend && go run ./cmd/llm-chat --mode=free
-   ```
-
-   ```sh
-   cd backend && go run ./cmd/llm-chat --mode=controlled
-   ```
-
-   Для сборки CLI:
-
-   ```sh
-   cd backend && go build ./cmd/llm-chat
-   ```
-
-4. Введите сообщение после `>>> `. Каждый непустой ввод соответствует ровно одному API request и выводится как `<<< <answer>`. В `free` передаются отдельные system и user messages без schema и `response_format`; ответ не валидируется. В `controlled` используется DeepSeek-compatible `response_format: {"type":"json_object"}`, controlled prompt и полная JSON Schema в system message, а ответ локально проверяется по schema и её word-limit-аннотациям. Чтобы завершить программу, передайте EOF: `Ctrl+D` в macOS/Linux.
-
-## Локальный API и Web-интерфейс
-
-После создания `config.yaml` запустите сервер:
-
 ```sh
-cd backend && go run ./cmd/api-server --config=config.yaml --addr=:8080
+cp backend/config.example.yaml backend/config.yaml
+cp backend/llm.example.yaml backend/llm.yaml
+# заполните api_key в backend/llm.yaml
+cd backend && go run ./cmd/api-server --config=config.yaml
 ```
 
-В отдельном терминале запустите frontend:
+Во втором терминале выполните `cd frontend && cp .env.example .env.local && npm ci && npm run dev`.
+Откройте [localhost:3000](http://localhost:3000). Журнал конкретного диалога доступен на `/admin`
+по его точному ID.
 
-```sh
-cd frontend
-npm ci
-npm run dev
-```
-
-Откройте [http://localhost:3000](http://localhost:3000). Каждый submit выполняет ровно один API-вызов. API-ключ и prompts остаются только в Go API-сервере.
-
-## Docker
-
-Диагностика ошибок моделей: [как читать логи LLM](docs/llm-logs.md).
-
-Основной способ запустить весь стек — Compose:
+## Docker Compose
 
 ```sh
 docker compose up --build
 ```
 
-Для публичного деплоя укажите внешний URL до сборки: `SITE_URL=https://example.com docker compose up --build`.
+Compose монтирует `backend/config.yaml`, вложенный `backend/llm.yaml`, chat и
+title system prompts read-only. В `llm.yaml` обязательны секции `chat` для
+основного ответа и `text` для фонового названия первого вопроса. Изменения LLM
+YAML и prompt применяются к следующим созданным
+диалогам; backend config применяется после перезапуска. Локальные конфиги
+с ключами не включаются в образ и не должны попадать в Git.
 
-Web-интерфейс будет доступен на [http://localhost:3000](http://localhost:3000), а API останется внутренним сервисом Compose.
+## Поведение и проверки
 
-Для отдельного backend API-образа:
+У каждого диалога свой неизменяемый снимок LLM-настроек. После ошибки новое сообщение
+заблокировано до ручного повтора; refresh восстанавливает принятую историю. Удаление
+требует подтверждения и отменяет ожидающий ответ.
 
-```sh
-docker build -t ai-barista-api ./backend
-docker run --rm -p 8080:8080 -v "$(pwd)/backend/config.yaml:/app/config.yaml:ro" ai-barista-api
-```
-
-CLI доступен в том же backend-образе:
-
-```sh
-docker run --rm -it -v "$(pwd)/backend/config.yaml:/app/config.yaml:ro" ai-barista-api llm-chat --mode=free
-```
-
-При отдельной сборке frontend используйте его Dockerfile и передайте URL API:
+- [Спецификация](.specs/barista-agent/SPEC.md)
+- [Диагностика и журнал](docs/llm-logs.md)
+- [Browser-проверки](frontend/e2e/README.md)
 
 ```sh
-docker build --build-arg SITE_URL=https://example.com -t ai-barista-web -f frontend/Dockerfile frontend
-docker run --rm -p 3000:3000 -e BARISTA_BACKEND_URL=http://host.docker.internal:8080 ai-barista-web
+cd backend && go test -race ./... && go vet ./...
 ```
 
-В интерфейсе доступны вкладки «Бариста», «Алгоритмы» и «Температура» (`Неделя 1, задание 4`). Во вкладке «Температура» можно отправить один prompt с температурой `0`, `0.7`, `1.2` или собственным числом от `0` до `2`; запрос идёт через отдельный same-origin `POST /api/temperature`. Вкладка «Алгоритмы» отправляет четыре независимых same-origin запроса к `/api/algorithms/*`; приватный backend URL остаётся server-side.
-
-Backend-образ не содержит `config.yaml` или API-ключ: конфигурация всегда монтируется read-only при запуске.
-
-`config.yaml` добавлен в `.gitignore`, поэтому ключ не попадёт в Git. Для другого OpenAI-совместимого провайдера укажите его базовый URL без конечного `/chat/completions`.
-
-## Структура
-
-```text
-backend/             отдельный Go backend module; config и пути prompts/schemas относительны к backend cwd
-backend/cmd/          CLI и API entrypoints
-backend/internal/     приватные Go packages
-frontend/             отдельное Next.js-приложение
-backend/Dockerfile    multi-stage backend-образ CLI и API
-frontend/Dockerfile   frontend-образ Next.js
-docker-compose.yml    два сервиса: barista-api и barista-web
+```sh
+cd frontend && npm run lint && npm run typecheck && npm test && npm run build
 ```
-
-CLI, AI-бариста и запрос температуры ограничены `request_timeout` (по умолчанию 30 секунд). Алгоритмы используют отдельный `algorithm_request_timeout` (по умолчанию и максимум 180 секунд) на каждый LLM-вызов; у meta-метода два последовательных вызова имеют отдельные полные бюджеты. Пустое введённое сообщение не отправляется в API. Файлы prompt и schema загружаются при старте, поэтому их можно менять без изменения Go-кода.

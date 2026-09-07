@@ -1,218 +1,127 @@
-// Package config loads application configuration.
+// Package config loads backend and LLM configuration files.
 package config
 
 import (
-	"encoding/json"
 	"fmt"
+	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
 
-	"aichallenge/week_1/task_1/internal/algorithms"
-
 	"gopkg.in/yaml.v3"
 )
 
-const (
-	defaultRequestTimeout          = 30 * time.Second
-	defaultModelRequestTimeout     = 180 * time.Second
-	defaultAlgorithmRequestTimeout = 180 * time.Second
-	maxAlgorithmRequestTimeout     = 180 * time.Second
-	defaultKimiBaseURL             = "https://api.moonshot.ai/v1"
-)
+const defaultRequestTimeout = 30 * time.Second
 
-const (
-	defaultFreeSystemPromptPath       = "prompts/barista-free-system.txt"
-	defaultControlledSystemPromptPath = "prompts/barista-controlled-system.txt"
-	defaultResponseSchemaPath         = "schemas/barista-response.schema.json"
-	defaultAlgorithmPromptsDir        = "prompts"
-)
-
-// Config contains settings for an OpenAI-compatible API.
-type Config struct {
-	BaseURL                    string             `yaml:"base_url"`
-	APIKey                     string             `yaml:"api_key"`
-	Model                      string             `yaml:"model"`
-	KimiBaseURL                string             `yaml:"kimi_base_url"`
-	KimiAPIKey                 string             `yaml:"kimi_api_key"`
-	RequestTimeout             time.Duration      `yaml:"request_timeout"`
-	ModelRequestTimeout        time.Duration      `yaml:"model_request_timeout"`
-	AlgorithmRequestTimeout    time.Duration      `yaml:"algorithm_request_timeout"`
-	FreeSystemPromptPath       string             `yaml:"free_system_prompt_path"`
-	ControlledSystemPromptPath string             `yaml:"controlled_system_prompt_path"`
-	ResponseSchemaPath         string             `yaml:"response_schema_path"`
-	AlgorithmPromptsDir        string             `yaml:"algorithms_prompts_dir"`
-	FreeSystemPrompt           string             `yaml:"-"`
-	ControlledSystemPrompt     string             `yaml:"-"`
-	ResponseSchema             json.RawMessage    `yaml:"-"`
-	AlgorithmPrompts           algorithms.Prompts `yaml:"-"`
+type BackendConfig struct {
+	Addr            string `yaml:"addr"`
+	LLMConfigPath   string `yaml:"llm_config_path"`
+	LogTextPayloads bool   `yaml:"log_text_payloads"`
 }
 
-// Load reads and validates a YAML configuration file.
-func Load(path string) (Config, error) {
+type LLMConfig struct {
+	Chat LLMEndpoint `yaml:"chat"`
+	Text LLMEndpoint `yaml:"text"`
+}
+type LLMEndpoint struct {
+	BaseURL          string        `yaml:"base_url"`
+	APIKey           string        `yaml:"api_key"`
+	Model            string        `yaml:"model"`
+	RequestTimeout   time.Duration `yaml:"request_timeout"`
+	Temperature      float64       `yaml:"temperature"`
+	SystemPromptPath string        `yaml:"system_prompt_path"`
+	SystemPrompt     string        `yaml:"-"`
+}
+
+func LoadBackend(path string) (BackendConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return Config{}, fmt.Errorf("чтение %s: %w", path, err)
+		return BackendConfig{}, fmt.Errorf("чтение backend config: %w", err)
 	}
-
-	var cfg Config
+	var cfg BackendConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return Config{}, fmt.Errorf("разбор %s: %w", path, err)
+		return BackendConfig{}, fmt.Errorf("разбор backend config: %w", err)
 	}
-	var configuredFields map[string]any
-	if err := yaml.Unmarshal(data, &configuredFields); err != nil {
-		return Config{}, fmt.Errorf("разбор %s: %w", path, err)
+	if strings.TrimSpace(cfg.Addr) == "" {
+		return BackendConfig{}, fmt.Errorf("addr не должен быть пустым")
 	}
-	if cfg.RequestTimeout == 0 {
-		cfg.RequestTimeout = defaultRequestTimeout
+	if strings.TrimSpace(cfg.LLMConfigPath) == "" {
+		return BackendConfig{}, fmt.Errorf("llm_config_path не должен быть пустым")
 	}
-	if _, configured := configuredFields["model_request_timeout"]; !configured {
-		cfg.ModelRequestTimeout = defaultModelRequestTimeout
+	if !filepath.IsAbs(cfg.LLMConfigPath) {
+		cfg.LLMConfigPath = filepath.Join(filepath.Dir(path), cfg.LLMConfigPath)
 	}
-	if strings.TrimSpace(cfg.KimiBaseURL) == "" {
-		cfg.KimiBaseURL = defaultKimiBaseURL
-	}
-	if _, configured := configuredFields["algorithm_request_timeout"]; !configured {
-		cfg.AlgorithmRequestTimeout = defaultAlgorithmRequestTimeout
-	}
-	if strings.TrimSpace(cfg.FreeSystemPromptPath) == "" {
-		cfg.FreeSystemPromptPath = defaultFreeSystemPromptPath
-	}
-	if strings.TrimSpace(cfg.ControlledSystemPromptPath) == "" {
-		cfg.ControlledSystemPromptPath = defaultControlledSystemPromptPath
-	}
-	if strings.TrimSpace(cfg.ResponseSchemaPath) == "" {
-		cfg.ResponseSchemaPath = defaultResponseSchemaPath
-	}
-	if strings.TrimSpace(cfg.AlgorithmPromptsDir) == "" {
-		cfg.AlgorithmPromptsDir = defaultAlgorithmPromptsDir
-	}
-	if err := cfg.Validate(); err != nil {
-		return Config{}, fmt.Errorf("проверка %s: %w", path, err)
-	}
-	if err := cfg.loadResources(filepath.Dir(path)); err != nil {
-		return Config{}, err
-	}
-
 	return cfg, nil
 }
 
-// Validate verifies that all required settings have useful values.
-func (c Config) Validate() error {
-	if c.ModelRequestTimeout <= 0 || c.ModelRequestTimeout > defaultModelRequestTimeout {
-		return fmt.Errorf("model_request_timeout должен быть больше нуля и не превышать %s", defaultModelRequestTimeout)
+// LoadLLM creates a fresh immutable configuration snapshot for a new dialog.
+func LoadLLM(path string) (LLMConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return LLMConfig{}, fmt.Errorf("чтение LLM config: %w", err)
 	}
-	if strings.TrimSpace(c.BaseURL) == "" {
-		return fmt.Errorf("base_url не должен быть пустым")
+	var cfg LLMConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return LLMConfig{}, fmt.Errorf("разбор LLM config: %w", err)
 	}
-	if strings.TrimSpace(c.APIKey) == "" {
-		return fmt.Errorf("api_key не должен быть пустым")
+	var raw map[string]any
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return LLMConfig{}, fmt.Errorf("разбор LLM config: %w", err)
 	}
-	if strings.TrimSpace(c.Model) == "" {
-		return fmt.Errorf("model не должен быть пустым")
+	if raw["chat"] == nil || raw["text"] == nil {
+		return LLMConfig{}, fmt.Errorf("chat и text обязательны")
 	}
-	if c.RequestTimeout <= 0 {
+	if err := loadEndpoint(&cfg.Chat, filepath.Dir(path), raw["chat"]); err != nil {
+		return LLMConfig{}, fmt.Errorf("chat: %w", err)
+	}
+	if err := loadEndpoint(&cfg.Text, filepath.Dir(path), raw["text"]); err != nil {
+		return LLMConfig{}, fmt.Errorf("text: %w", err)
+	}
+	return cfg, nil
+}
+
+func loadEndpoint(cfg *LLMEndpoint, dir string, raw any) error {
+	m, _ := raw.(map[string]any)
+	if cfg.RequestTimeout == 0 && m["request_timeout"] == nil {
+		cfg.RequestTimeout = defaultRequestTimeout
+	}
+	value, configured := m["temperature"]
+	if !configured {
+		cfg.Temperature = 1
+	}
+	if configured && value == nil {
+		return fmt.Errorf("temperature не должна быть null")
+	}
+	if math.IsNaN(cfg.Temperature) || math.IsInf(cfg.Temperature, 0) || cfg.Temperature < 0 || cfg.Temperature > 2 {
+		return fmt.Errorf("temperature должна быть конечным числом от 0 до 2")
+	}
+	if strings.TrimSpace(cfg.BaseURL) == "" || strings.TrimSpace(cfg.APIKey) == "" || strings.TrimSpace(cfg.Model) == "" {
+		return fmt.Errorf("base_url, api_key и model не должны быть пустыми")
+	}
+	u, err := url.Parse(cfg.BaseURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("base_url должен быть HTTP URL")
+	}
+	if cfg.RequestTimeout <= 0 {
 		return fmt.Errorf("request_timeout должен быть больше нуля")
 	}
-	if c.AlgorithmRequestTimeout <= 0 || c.AlgorithmRequestTimeout > maxAlgorithmRequestTimeout {
-		return fmt.Errorf("algorithm_request_timeout должен быть больше нуля и не превышать %s", maxAlgorithmRequestTimeout)
+	if strings.TrimSpace(cfg.SystemPromptPath) == "" {
+		return fmt.Errorf("system_prompt_path не должен быть пустым")
 	}
-	if strings.TrimSpace(c.FreeSystemPromptPath) == "" {
-		return fmt.Errorf("free_system_prompt_path не должен быть пустым")
+	p := cfg.SystemPromptPath
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(dir, p)
 	}
-	if strings.TrimSpace(c.ControlledSystemPromptPath) == "" {
-		return fmt.Errorf("controlled_system_prompt_path не должен быть пустым")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return fmt.Errorf("чтение system prompt: %w", err)
 	}
-	if strings.TrimSpace(c.ResponseSchemaPath) == "" {
-		return fmt.Errorf("response_schema_path не должен быть пустым")
+	if !utf8.Valid(data) || strings.TrimSpace(string(data)) == "" {
+		return fmt.Errorf("system prompt должен быть непустым UTF-8 текстом")
 	}
-	if strings.TrimSpace(c.AlgorithmPromptsDir) == "" {
-		return fmt.Errorf("algorithms_prompts_dir не должен быть пустым")
-	}
+	cfg.SystemPrompt = string(data)
 	return nil
-}
-
-func (c *Config) loadResources(configDir string) error {
-	freeSystemPrompt, err := loadPrompt(configDir, c.FreeSystemPromptPath)
-	if err != nil {
-		return fmt.Errorf("загрузка free system prompt: %w", err)
-	}
-	controlledSystemPrompt, err := loadPrompt(configDir, c.ControlledSystemPromptPath)
-	if err != nil {
-		return fmt.Errorf("загрузка controlled system prompt: %w", err)
-	}
-	algorithmPrompts, err := loadAlgorithmPrompts(configDir, c.AlgorithmPromptsDir)
-	if err != nil {
-		return err
-	}
-
-	responseSchemaPath := resourcePath(configDir, c.ResponseSchemaPath)
-	responseSchema, err := os.ReadFile(responseSchemaPath)
-	if err != nil {
-		return fmt.Errorf("чтение JSON Schema %s: %w", c.ResponseSchemaPath, err)
-	}
-	var schema map[string]any
-	if err := json.Unmarshal(responseSchema, &schema); err != nil {
-		return fmt.Errorf("разбор JSON Schema %s: %w", c.ResponseSchemaPath, err)
-	}
-	if schema == nil {
-		return fmt.Errorf("JSON Schema %s должна быть JSON-объектом", c.ResponseSchemaPath)
-	}
-
-	c.FreeSystemPrompt = freeSystemPrompt
-	c.ControlledSystemPrompt = controlledSystemPrompt
-	c.ResponseSchema = responseSchema
-	c.AlgorithmPrompts = algorithmPrompts
-	return nil
-}
-
-func loadAlgorithmPrompts(configDir, directory string) (algorithms.Prompts, error) {
-	base := resourcePath(configDir, directory)
-	sources := algorithms.PromptSources{}
-	paths := []struct {
-		name   string
-		target *string
-	}{
-		{"algorithm-direct-system.txt", &sources.DirectSystem},
-		{"algorithm-step-by-step-system.txt", &sources.StepByStepSystem},
-		{"algorithm-experts-system.txt", &sources.ExpertsSystem},
-		{"algorithm-meta-prompt-generation-system.txt", &sources.MetaPromptGenerationSystem},
-		{"algorithm-meta-solution-system.txt", &sources.MetaSolutionSystem},
-		{"algorithm-meta-solution-user.txt", &sources.MetaSolutionUser},
-	}
-	for _, prompt := range paths {
-		content, err := os.ReadFile(filepath.Join(base, prompt.name))
-		if err != nil {
-			return algorithms.Prompts{}, fmt.Errorf("чтение algorithm prompt %s: %w", filepath.Join(directory, prompt.name), err)
-		}
-		if !utf8.Valid(content) {
-			return algorithms.Prompts{}, fmt.Errorf("algorithm prompt %s должен быть валидным UTF-8", filepath.Join(directory, prompt.name))
-		}
-		*prompt.target = string(content)
-	}
-	prompts, err := algorithms.NewPrompts(sources)
-	if err != nil {
-		return algorithms.Prompts{}, fmt.Errorf("загрузка algorithm prompts: %w", err)
-	}
-	return prompts, nil
-}
-
-func loadPrompt(configDir, path string) (string, error) {
-	prompt, err := os.ReadFile(resourcePath(configDir, path))
-	if err != nil {
-		return "", fmt.Errorf("чтение %s: %w", path, err)
-	}
-	if strings.TrimSpace(string(prompt)) == "" {
-		return "", fmt.Errorf("%s не должен быть пустым", path)
-	}
-	return string(prompt), nil
-}
-
-func resourcePath(configDir, path string) string {
-	if filepath.IsAbs(path) {
-		return path
-	}
-	return filepath.Join(configDir, path)
 }

@@ -1,0 +1,12 @@
+chat:
+  base_url: "http://127.0.0.1:18081"
+  api_key: "e2e-dummy-credential"
+  model: "e2e-fixture-model"
+  request_timeout: 10s
+  system_prompt_path: "barista-system.txt"
+text:
+  base_url: "http://127.0.0.1:18081"
+  api_key: "e2e-dummy-credential"
+  model: "e2e-title-model"
+  request_timeout: 10s
+  system_prompt_path: "chat-title-system.txt"

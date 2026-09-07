@@ -1,0 +1,14 @@
+chat:
+  base_url: "https://api.deepseek.com/v1"
+  api_key: "replace-me"
+  model: "deepseek-chat"
+  request_timeout: 30s
+  temperature: 1
+  system_prompt_path: "prompts/barista-system.txt"
+text:
+  base_url: "https://api.deepseek.com/v1"
+  api_key: "replace-me"
+  model: "deepseek-v4-flash"
+  request_timeout: 30s
+  temperature: 0.2
+  system_prompt_path: "prompts/chat-title-system.txt"
