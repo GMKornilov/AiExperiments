@@ -1,25 +1,22 @@
 import { BaristaWorkspace } from "@/features/barista/components/barista-workspace";
-import { SiteNavigation } from "@/components/site-navigation/site-navigation";
 import styles from "./page.module.css";
 
 export default function Home() {
   return (
     <main className={styles.pageShell}>
-      <SiteNavigation active="barista" />
       <header className={styles.masthead}>
         <p className={styles.eyebrow}>Ваш кофейный напарник</p>
         <h1 className={styles.title}>
           Тихий помол<span aria-hidden="true">.</span>
         </h1>
         <p className={styles.intro}>
-          Настройте рецепт, разберите вкус или сравните свободный ответ со
-          структурированным JSON.
+          Спросите о зёрнах, помоле, рецепте или о том, как улучшить чашку.
         </p>
       </header>
 
       <BaristaWorkspace />
 
-      <footer className={styles.footer}>Тихий помол · AI-бариста</footer>
+      <footer className={styles.footer}>Тихий помол · AI-бариста · <a href="/admin">Журнал</a></footer>
     </main>
   );
 }

@@ -1,311 +1,208 @@
 "use client";
 
-import {
-  FormEvent,
-  KeyboardEvent,
-  useRef,
-  useState,
-} from "react";
-import { requestBarista } from "../lib/chat-client";
-import {
-  ChatMode,
-  ChatResponse,
-  ControlledAnswer,
-  isControlledAnswer,
-} from "../model/types";
+import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { MarkdownContent } from "@/components/markdown-content/markdown-content";
+import { BaristaAPIError, baristaClient, userFacingError } from "../lib/chat-client";
+import type { BaristaMessage, Dialog } from "../model/types";
 import styles from "./barista-workspace.module.css";
 
-type ViewState =
-  | { status: "idle" }
-  | { status: "loading" }
-  | { status: "error"; message: string }
-  | { status: "success"; response: ChatResponse; requestID: number };
+const newID = () => globalThis.crypto?.randomUUID?.() ?? `local-${Date.now()}-${Math.random()}`;
+const hasPending = (dialog: Dialog) => dialog.messages.some((message) => message.status === "pending");
+const hasError = (dialog: Dialog) => dialog.messages.some((message) => message.role === "user" && message.status === "error");
+const sortDialogs = (dialogs: Dialog[]) => [...dialogs].sort((left, right) => right.updated_at.localeCompare(left.updated_at));
 
-const recipeMetrics: Array<{
-  key: keyof ControlledAnswer["recipe"];
-  label: string;
-  unit: string;
-}> = [
-  { key: "coffee_g", label: "Кофе", unit: "г" },
-  { key: "water_g", label: "Вода", unit: "г" },
-  { key: "temperature_c", label: "Температура", unit: "°C" },
-  { key: "brew_time_sec", label: "Время", unit: "с" },
-];
+function mergeServerDialog(server: Dialog, local?: Dialog) {
+  const localOnly = local?.messages.filter((message) => message.localOnly && !server.messages.some((saved) => saved.client_message_id === message.client_message_id)) ?? [];
+  return localOnly.length ? { ...server, messages: [...server.messages, ...localOnly] } : server;
+}
 
 export function BaristaWorkspace() {
-  const [mode, setMode] = useState<ChatMode>("free");
-  const [prompt, setPrompt] = useState("");
-  const [view, setView] = useState<ViewState>({ status: "idle" });
-  const requestSequence = useRef(0);
-  const abortController = useRef<AbortController | null>(null);
-  const formRef = useRef<HTMLFormElement>(null);
-  const modeInputs = useRef<Partial<Record<ChatMode, HTMLInputElement | null>>>({});
+  const [dialogs, setDialogs] = useState<Dialog[]>([]);
+  const [selectedID, setSelectedID] = useState<string | null>(null);
+  const [text, setText] = useState("");
+  const [ready, setReady] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Dialog | null>(null);
+  const removed = useRef(new Set<string>());
+  const retrying = useRef(new Set<string>());
 
-  const isLoading = view.status === "loading";
+  const selected = dialogs.find((dialog) => dialog.id === selectedID) ?? null;
+  const sessionPending = dialogs.some(hasPending);
 
-  async function submit(event?: FormEvent<HTMLFormElement>) {
-    event?.preventDefault();
-    const normalizedPrompt = prompt.trim();
-    if (!normalizedPrompt || isLoading) return;
+  const reconcile = async () => {
+    const list = await baristaClient.list();
+    setDialogs((current) => sortDialogs(list.dialogs.map((dialog) => mergeServerDialog(dialog, current.find((item) => item.id === dialog.id)))));
+    setSelectedID((current) => list.selected_dialog_id || (current && list.dialogs.some((dialog) => dialog.id === current) ? current : list.dialogs[0]?.id ?? null));
+    return list;
+  };
 
-    abortController.current?.abort();
-    const controller = new AbortController();
-    abortController.current = controller;
-    setView({ status: "loading" });
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void reconcile().catch(() => setError("Не удалось загрузить диалоги.")).finally(() => setReady(true)); }, 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+  useEffect(() => {
+    if (!sessionPending) return;
+    const timer = window.setInterval(() => { void reconcile().catch(() => undefined); }, 2000);
+    return () => window.clearInterval(timer);
+  }, [sessionPending]);
 
+  const replaceDialog = (next: Dialog) => {
+    if (removed.current.has(next.id)) return;
+    setDialogs((current) => sortDialogs(current.map((dialog) => dialog.id === next.id ? next : dialog)));
+  };
+
+  async function createDialog() {
+    setError(null);
     try {
-      const response = await requestBarista(mode, normalizedPrompt, controller.signal);
-      requestSequence.current += 1;
-      setView({
-        status: "success",
-        response,
-        requestID: requestSequence.current,
-      });
-    } catch (error) {
-      if (controller.signal.aborted) return;
-      setView({
-        status: "error",
-        message:
-          error instanceof Error ? error.message : "Не удалось получить ответ.",
-      });
+      const dialog = await baristaClient.create();
+      setDialogs((current) => sortDialogs([dialog, ...current]));
+      setSelectedID(dialog.id);
+      setSidebarOpen(false);
+      void baristaClient.event("dialog_created", { dialog_id: dialog.id });
+    } catch (cause) { setError(userFacingError(cause)); }
+  }
+
+  async function selectDialog(id: string) {
+    setSelectedID(id);
+    setSidebarOpen(false);
+    try {
+      await baristaClient.select(id);
+      const dialog = await baristaClient.get(id);
+      replaceDialog(dialog);
+      void baristaClient.event("dialog_selected", { dialog_id: id });
+    } catch { void reconcile().catch(() => undefined); }
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    const id = deleteTarget.id;
+    removed.current.add(id);
+    setDialogs((current) => current.filter((dialog) => dialog.id !== id));
+    setSelectedID((current) => current === id ? null : current);
+    setDeleteTarget(null);
+    try {
+      await baristaClient.remove(id);
+      void baristaClient.event("dialog_deleted", { dialog_id: id });
+      await reconcile();
+    } catch (cause) {
+      removed.current.delete(id);
+      setError(userFacingError(cause));
+      void reconcile().catch(() => undefined);
+    }
+  }
+
+  async function send(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+    if (!selected || sessionPending || hasError(selected)) return;
+    const normalized = text.trim();
+    if (!normalized || Array.from(normalized).length > 4000) {
+      setError("Введите вопрос длиной до 4 000 символов.");
+      void baristaClient.event("dialog_validation_failed", { dialog_id: selected.id, error_category: "validation" });
+      return;
+    }
+    const clientID = newID();
+    const optimistic: BaristaMessage = { id: `local-${clientID}`, client_message_id: clientID, role: "user", text: normalized, status: "pending", created_at: new Date().toISOString(), localOnly: true };
+    setText("");
+    replaceDialog({ ...selected, messages: [...selected.messages, optimistic], updated_at: optimistic.created_at });
+    try {
+      const dialog = await baristaClient.send(selected.id, clientID, normalized);
+      replaceDialog(dialog);
+      void baristaClient.event("message_sent", { dialog_id: selected.id, message_id: clientID });
+    } catch (cause) {
+      const category = cause instanceof BaristaAPIError ? cause.category : "network";
+      replaceDialog({ ...selected, messages: [...selected.messages, { ...optimistic, status: "error", error_category: category }], updated_at: optimistic.created_at });
+      void baristaClient.event("message_failed", { dialog_id: selected.id, message_id: clientID, error_category: category });
+      setError(userFacingError(cause));
+    }
+  }
+
+  async function retry(message: BaristaMessage) {
+    if (!selected || sessionPending || retrying.current.has(message.id)) return;
+    retrying.current.add(message.id);
+    setError(null);
+    let current: Dialog | undefined;
+    let canonical = message;
+    let persisted = false;
+    try {
+      current = await baristaClient.get(selected.id);
+      const serverMessage = current.messages.find((item) => item.id === message.id || item.client_message_id === message.client_message_id);
+      canonical = serverMessage ?? message;
+      persisted = Boolean(serverMessage);
+      if (serverMessage?.status === "success" || (serverMessage && current.messages.some((item) => item.role === "assistant" && item.created_at >= serverMessage.created_at))) { replaceDialog(current); return; }
+      if (serverMessage?.status === "pending") { replaceDialog(current); return; }
+      const pending = { ...canonical, status: "pending" as const, error_category: undefined, localOnly: !serverMessage || message.localOnly };
+      replaceDialog({ ...current, messages: serverMessage ? current.messages.map((item) => item.id === serverMessage.id ? pending : item) : [...current.messages, pending] });
+      const retryID = serverMessage?.id;
+      if (!retryID) {
+        const dialog = await baristaClient.send(selected.id, message.client_message_id ?? newID(), message.text);
+        replaceDialog(dialog);
+      } else {
+        const dialog = await baristaClient.retry(selected.id, retryID);
+        replaceDialog(dialog);
+      }
+      void baristaClient.event("message_retried", { dialog_id: selected.id, message_id: message.id });
+    } catch (cause) {
+      const category = cause instanceof BaristaAPIError ? cause.category : "network";
+      if (current) replaceDialog({ ...current, messages: [...current.messages.filter((item) => item.id !== canonical.id && item.client_message_id !== canonical.client_message_id), { ...canonical, status: "error", error_category: category, localOnly: persisted ? undefined : true }] });
+      setError(userFacingError(cause));
     } finally {
-      if (abortController.current === controller) abortController.current = null;
+      retrying.current.delete(message.id);
     }
   }
 
-  function handlePromptKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-      event.preventDefault();
-      formRef.current?.requestSubmit();
-    }
+  async function copy(message: BaristaMessage) {
+    try { await navigator.clipboard.writeText(message.text); } catch { setError("Не удалось скопировать сообщение."); return; }
+    if (selected) void baristaClient.event("message_copied", { dialog_id: selected.id, message_id: message.id });
   }
 
-  function handleModeKeyDown(
-    event: KeyboardEvent<HTMLInputElement>,
-    value: ChatMode,
-  ) {
-    if (event.key === " " || event.key === "Enter") {
-      event.preventDefault();
-      setMode(value);
-      return;
-    }
+  const composerDisabled = !selected || sessionPending || (selected && hasError(selected));
+  const dialogsLabel = useMemo(() => `${dialogs.length} диалогов`, [dialogs.length]);
 
-    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
-      return;
-    }
-
-    event.preventDefault();
-    const nextMode: ChatMode = value === "free" ? "controlled" : "free";
-    setMode(nextMode);
-    modeInputs.current[nextMode]?.focus();
-  }
-
-  return (
-    <div className={styles.workspace}>
-      <section className={styles.composer} aria-labelledby="composer-title">
-        <div className={styles.sectionHeading}>
-          <h2 id="composer-title">Что приготовим?</h2>
-          <p>Выберите, нужен ли структурированный рецепт.</p>
-        </div>
-
-        <form ref={formRef} onSubmit={submit}>
-          <fieldset className={styles.modeSwitch} disabled={isLoading}>
-            <legend>Режим ответа</legend>
-            <div className={styles.modeOptions}>
-              {(["free", "controlled"] as const).map((value) => (
-                <label className={styles.modeOption} key={value}>
-                  <input
-                    ref={(input) => {
-                      modeInputs.current[value] = input;
-                    }}
-                    type="radio"
-                    name="mode"
-                    value={value}
-                    checked={mode === value}
-                    onChange={() => setMode(value)}
-                    onKeyDown={(event) => handleModeKeyDown(event, value)}
-                  />
-                  <span>{value === "free" ? "Свободный" : "Структурный"}</span>
-                </label>
-              ))}
-            </div>
-          </fieldset>
-
-          <label className={styles.promptLabel} htmlFor="prompt">
-            Ваш вопрос
-          </label>
-          <textarea
-            id="prompt"
-            name="prompt"
-            rows={5}
-            required
-            maxLength={4000}
-            value={prompt}
-            disabled={isLoading}
-            onChange={(event) => setPrompt(event.target.value)}
-            onKeyDown={handlePromptKeyDown}
-            placeholder="Например: эспрессо получается горьким — что изменить?"
-            aria-describedby="prompt-hint"
-          />
-
-          <div className={styles.formFooter}>
-            <p id="prompt-hint" className={styles.hint}>
-              Enter — отправить · Shift + Enter — новая строка
-            </p>
-            <button type="submit" disabled={isLoading || !prompt.trim()}>
-              <span>{isLoading ? "Настраиваем помол…" : "Спросить бариста"}</span>
-              <span aria-hidden="true">→</span>
-            </button>
-          </div>
+  return <div className={styles.shell}>
+    <button className={styles.menuButton} type="button" aria-expanded={sidebarOpen} aria-controls="dialogs-sidebar" onClick={() => setSidebarOpen((open) => !open)}>Диалоги</button>
+    <aside id="dialogs-sidebar" className={`${styles.sidebar} ${sidebarOpen ? styles.sidebarOpen : ""}`} aria-label="Диалоги">
+      <button className={styles.newDialog} type="button" disabled={!ready} onClick={createDialog}>+ Новый диалог</button>
+      <p className={styles.counter}>{dialogsLabel}</p>
+      <nav>{dialogs.map((dialog) => <div className={styles.dialogRow} key={dialog.id}>
+        <button type="button" className={dialog.id === selectedID ? styles.selectedDialog : styles.dialogButton} onClick={() => void selectDialog(dialog.id)}>
+          <span>{dialog.title}</span><small>ID: {dialog.id}</small>
+        </button>
+        <button type="button" className={styles.deleteButton} aria-label={`Удалить диалог ${dialog.title}`} onClick={() => setDeleteTarget(dialog)}>×</button>
+      </div>)}</nav>
+    </aside>
+    <main className={styles.chat} aria-busy={!ready}>
+      {error && <p className={styles.error} role="alert">{error}</p>}
+      {!ready ? <div className={styles.empty}>Загружаем диалоги…</div> : !selected ? <div className={styles.empty}><h2>Чашка ждёт вопроса</h2><p>Создайте диалог, чтобы поговорить с бариста.</p><button type="button" onClick={createDialog}>Новый диалог</button></div> : <>
+        <header className={styles.chatHeader}><div><h1>{selected.title}</h1><p>ID: {selected.id}</p></div></header>
+        <section className={styles.messages} aria-label="Переписка" aria-live="polite">
+          {selected.messages.length === 0 && <div className={styles.empty}><p>Задайте вопрос о зёрнах, помоле или рецепте.</p></div>}
+          {selected.messages.map((message) => <article className={`${styles.bubble} ${message.role === "user" ? styles.userBubble : styles.assistantBubble}`} key={message.id}>
+            <div className={styles.messageActions}><span>{message.role === "user" ? "Вы" : "Бариста"}</span><button type="button" className={styles.iconButton} aria-label="Копировать сообщение" onClick={() => void copy(message)}><CopyIcon /></button></div>
+            <MarkdownContent>{message.text}</MarkdownContent>
+            {message.status === "pending" && <p className={styles.status} role="status">Бариста готовит ответ…</p>}
+            {message.status === "error" && <div className={styles.failed}><p>Не удалось получить ответ. Повторите отправку.</p>{message.role === "user" && <button type="button" className={styles.iconButton} aria-label="Повторить отправку" onClick={() => void retry(message)}><RetryIcon /></button>}</div>}
+          </article>)}
+        </section>
+        <form className={styles.composer} onSubmit={send}>
+          <label htmlFor="barista-message">Ваш вопрос</label>
+          <textarea id="barista-message" value={text} rows={3} disabled={composerDisabled} onChange={(event) => setText(event.target.value)} onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder="Например: эспрессо горчит — что изменить?" />
+          <div><span>{Array.from(text).length}/4000</span><button type="submit" disabled={composerDisabled || !text.trim()}>Отправить</button></div>
+          {selected && hasError(selected) && <p className={styles.blocked}>Повторите ошибочную отправку, чтобы продолжить диалог.</p>}
         </form>
-      </section>
-
-      <section
-        className={styles.responsePanel}
-        aria-live="polite"
-        aria-busy={isLoading}
-        aria-label="Ответ бариста"
-      >
-        {view.status === "idle" && <EmptyState />}
-        {view.status === "loading" && <LoadingState />}
-        {view.status === "error" && <ErrorState message={view.message} />}
-        {view.status === "success" && (
-          <ResultView key={view.requestID} response={view.response} />
-        )}
-      </section>
-    </div>
-  );
+      </>}
+    </main>
+    {deleteTarget && <div className={styles.dialogOverlay} role="presentation" onKeyDown={(event) => {
+      if (event.key === "Escape") { setDeleteTarget(null); return; }
+      if (event.key !== "Tab") return;
+      const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>("button:not([disabled])"));
+      if (!controls.length) return;
+      const first = controls[0]; const last = controls.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    }}><section className={styles.confirm} role="alertdialog" aria-modal="true" aria-labelledby="delete-title"><h2 id="delete-title">Удалить диалог?</h2><p>Переписка и незавершённый ответ будут удалены без возможности восстановления.</p><div><button type="button" autoFocus onClick={() => setDeleteTarget(null)}>Отмена</button><button type="button" className={styles.danger} onClick={() => void confirmDelete()}>Удалить</button></div></section></div>}
+  </div>;
 }
 
-function EmptyState() {
-  return (
-    <div className={styles.emptyState}>
-      <p className={styles.emptyMark} aria-hidden="true">01</p>
-      <h2>Чашка ждёт вопроса</h2>
-      <p>Ответ появится здесь — текстом или как точный рецепт.</p>
-    </div>
-  );
-}
-
-function LoadingState() {
-  return (
-    <div className={styles.loadingState} role="status">
-      <span className={styles.loader} aria-hidden="true" />
-      <p>Бариста настраивает помол…</p>
-    </div>
-  );
-}
-
-function ErrorState({ message }: { message: string }) {
-  return (
-    <div className={styles.errorState} role="alert">
-      <p className={styles.eyebrow}>Не получилось</p>
-      <h2>Ответ не заварился</h2>
-      <p>{message}</p>
-    </div>
-  );
-}
-
-function ResultView({ response }: { response: ChatResponse }) {
-  return (
-    <div>
-      {response.mode === "controlled" ? (
-        isControlledAnswer(response.data) ? (
-          <ControlledResult answer={response.data} />
-        ) : (
-          <GenericJSONResult data={response.data} />
-        )
-      ) : (
-        <FreeResult text={response.raw} />
-      )}
-
-      <details className={styles.rawResponse}>
-        <summary>
-          Сырой ответ <span aria-hidden="true">⌄</span>
-        </summary>
-        <pre>{response.raw}</pre>
-      </details>
-    </div>
-  );
-}
-
-function ResultHeading({ mode }: { mode: string }) {
-  return (
-    <div className={styles.answerHeading}>
-      <h2>{mode === "Структурный режим" ? "Рецепт и настройка" : "Ответ бариста"}</h2>
-      <p>{mode}</p>
-    </div>
-  );
-}
-
-function FreeResult({ text }: { text: string }) {
-  return (
-    <>
-      <ResultHeading mode="Свободный режим" />
-      <MarkdownContent className={styles.freeAnswer}>{text}</MarkdownContent>
-    </>
-  );
-}
-
-function ControlledResult({ answer }: { answer: ControlledAnswer }) {
-  return (
-    <>
-      <ResultHeading mode="Структурный режим" />
-      <p className={styles.sectionLabel}>Кратко</p>
-      <MarkdownContent className={styles.summary}>{answer.summary}</MarkdownContent>
-      <p className={styles.sectionLabel}>На что обратить внимание</p>
-      <ol className={styles.focusPoints}>
-        {answer.focus_points.map((point, index) => (
-          <li key={`${index}-${point}`}><MarkdownContent>{point}</MarkdownContent></li>
-        ))}
-      </ol>
-      <p className={styles.sectionLabel}>Параметры рецепта</p>
-      <dl className={styles.metrics}>
-        {recipeMetrics.map(({ key, label, unit }) => (
-          <div className={styles.metric} key={key}>
-            <dt>{label}</dt>
-            <dd>{String(answer.recipe[key])} {unit}</dd>
-          </div>
-        ))}
-      </dl>
-    </>
-  );
-}
-
-function GenericJSONResult({ data }: { data: unknown }) {
-  return (
-    <>
-      <ResultHeading mode="JSON" />
-      <div className={styles.jsonTree}>
-        <JSONValue value={data} />
-      </div>
-    </>
-  );
-}
-
-function JSONValue({ value, label }: { value: unknown; label?: string }) {
-  const prefix = label ? <span className={styles.jsonKey}>{label}: </span> : null;
-  if (value === null || typeof value !== "object") {
-    return (
-      <div className={styles.jsonNode}>
-        {prefix}
-        <span className={value === null ? styles.jsonNull : styles.jsonValue}>
-          {value === null ? "null" : String(value)}
-        </span>
-      </div>
-    );
-  }
-
-  const entries = Array.isArray(value)
-    ? value.map((item, index) => [String(index), item] as const)
-    : Object.entries(value);
-  return (
-    <div className={styles.jsonNode}>
-      {prefix}
-      {entries.map(([key, child]) => (
-        <JSONValue key={key} label={key} value={child} />
-      ))}
-    </div>
-  );
-}
+function CopyIcon() { return <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3" /></svg>; }
+function RetryIcon() { return <svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 11a8 8 0 1 0 2 5.5" /><path d="M20 4v7h-7" /></svg>; }

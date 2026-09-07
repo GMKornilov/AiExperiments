@@ -1,56 +1,14 @@
 # Backend AI-бариста
 
-Из каталога `backend/`:
-
-Локальные собранные binaries при необходимости можно хранить в `backend/bin/`.
-
 ```sh
 cp config.example.yaml config.yaml
-go run ./cmd/llm-chat --mode=free
-go run ./cmd/llm-chat --mode=controlled
-go run ./cmd/api-server --config=config.yaml --addr=:8080
-go build ./cmd/llm-chat
-go build ./cmd/api-server
-go test ./...
-go vet ./...
+cp llm.example.yaml llm.yaml
+# заполните api_key в llm.yaml
+go run ./cmd/api-server --config=config.yaml
 ```
 
-Алгоритмический API принимает `POST` на `/api/algorithms/direct`,
-`/api/algorithms/step-by-step`, `/api/algorithms/generated-prompt` и
-`/api/algorithms/experts` с JSON-снимком `{"statement":"...","language":"python"}`.
-Допустимые языки: `python`, `java`, `cpp`. Тело ограничено 64 KiB, условие —
-10 000 Unicode-символов; ответ LLM — 1 MiB, ответ API — должен быть ограничен
-BFF до 8 MiB. Чтение входящего алгоритмического запроса ограничено 10 секундами.
-CLI и AI-бариста используют `request_timeout` (по умолчанию 30 секунд).
-Алгоритмы используют независимый `algorithm_request_timeout` (по умолчанию и максимум
-180 секунд) для каждого LLM-вызова; метод `generated-prompt` выполняет два
-последовательных вызова с отдельным полным бюджетом каждого.
-Шесть алгоритмических шаблонов `algorithm-*.txt` загружаются и проверяются при старте из
-`algorithms_prompts_dir` (по умолчанию `prompts`, относительно `config.yaml`); изменение
-файлов применяется после перезапуска без пересборки Go-кода.
-
-`POST /api/temperature` принимает JSON-снимок
-`{"prompt":"Придумай короткий слоган","temperature":0.7}`. `prompt` после
-trim должен содержать от 1 до 4 000 Unicode-символов, `temperature` — конечное
-число от `0` до `2`; тело ограничено 64 KiB. Успешный ответ —
-`{"answer":"..."}`. Для запроса выполняется один OpenAI-совместимый Chat
-Completions вызов с одной пользовательской репликой и переданной температурой,
-без system prompt, JSON Schema и `response_format`. Этот маршрут не принимает
-`mode`, `statement` или `language` и использует общий `request_timeout`.
-
-`POST /api/model-temperature` принимает JSON-снимок
-`{"prompt":"Придумай короткий слоган","temperature":0.7,"provider":"deepseek","model":"deepseek-v4-flash"}`.
-Кроме правил `/api/temperature`, маршрут требует согласованную пару provider/model.
-Для DeepSeek доступны
-`deepseek-v4-flash`, `deepseek-v4-pro`, `deepseek-v4-flash-vision-exp` и передаёт
-выбранный идентификатор в единственный Chat Completions вызов. Для Kimi доступны
-актуальные `kimi-k3`, `kimi-k2.7-code`, `kimi-k2.6`; используются отдельные
-`kimi_base_url` и `kimi_api_key`. Ответ содержит `duration_ms`, `input_tokens`,
-`output_tokens` и рассчитанный `cost_usd`. Произвольные и устаревшие идентификаторы
-отклоняются до обращения к LLM.
-Для Kimi принимается только температура `1`; в upstream поле опускается,
-для Kimi K3 используется reasoning_effort=low (полное отключение API не поддерживает).
-DeepSeek в сравнении использует thinking.type=disabled. Для сравнения действует
-`model_request_timeout`: по умолчанию 180s, допустимо больше нуля и не более 180s;
-BFF ждёт 190s. Стоимость учитывает `usage.cached_tokens`
-и не включает налоги.
+`config.yaml` содержит `addr`, `llm_config_path` и `log_text_payloads`.
+`llm.yaml` содержит endpoint, credential, модель, timeout и путь к system prompt.
+Backend читает LLM config и prompt при создании диалога, сохраняя снимок только
+в ОЗУ. Обычные chat API требуют `X-Session-ID`; admin lookup принимает только
+точный ID диалога. Все данные исчезают при перезапуске.

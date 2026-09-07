@@ -1,5 +1,0 @@
-Исходный statement:
-{{.Statement}}
-
-Неизменённый generated prompt:
-{{.GeneratedPrompt}}

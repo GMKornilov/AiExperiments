@@ -6,75 +6,74 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
-	"aichallenge/week_1/task_1/internal/algorithms"
-	"aichallenge/week_1/task_1/internal/barista"
+	"aichallenge/week_1/task_1/internal/agent"
 	"aichallenge/week_1/task_1/internal/config"
 	"aichallenge/week_1/task_1/internal/httpapi"
 	"aichallenge/week_1/task_1/internal/llm"
-	"aichallenge/week_1/task_1/internal/modeltemperature"
-	"aichallenge/week_1/task_1/internal/temperature"
+	"aichallenge/week_1/task_1/internal/observability"
+	"aichallenge/week_1/task_1/internal/session"
 )
 
 func main() {
-	configPath, address, err := parseFlags(os.Args[1:])
+	logger := slog.Default()
+	started := time.Now()
+	requestID := llm.RequestID(llm.WithRequestID(context.Background(), ""))
+	configPath, err := parseFlags(os.Args[1:])
 	if err != nil {
-		log.Printf("Ошибка: %v", err)
+		logConfig(logger, requestID, "failure", time.Since(started), "validation")
 		os.Exit(1)
 	}
-	cfg, err := config.Load(configPath)
+	cfg, err := config.LoadBackend(configPath)
 	if err != nil {
-		log.Printf("Ошибка: %v", err)
+		logConfig(logger, requestID, "failure", time.Since(started), "config")
 		os.Exit(1)
 	}
-	server := &http.Server{Addr: address, Handler: newHandler(cfg)}
-	if err := serve(server); err != nil {
-		log.Printf("Ошибка сервера: %v", err)
+	logConfig(logger, requestID, "success", time.Since(started), "")
+	journal := observability.NewJournal(cfg.LogTextPayloads, nil)
+	store := session.NewStore(agent.OpenAIProvider{})
+	defer store.Close()
+	server := &http.Server{Addr: cfg.Addr, Handler: httpapi.New(store, httpapi.SnapshotLoader(cfg.LLMConfigPath), journal)}
+	if err := serve(server, store.Close); err != nil {
+		logger.Error("barista.server", "source", "backend", "event", "server", "result", "failure", "correlation_id", requestID, "error_category", "network")
 		os.Exit(1)
 	}
 }
 
-func newHandler(cfg config.Config) http.Handler {
-	baristaClient := llm.NewClient(cfg.BaseURL, cfg.APIKey, cfg.RequestTimeout)
-	algorithmsClient := llm.NewClient(cfg.BaseURL, cfg.APIKey, cfg.AlgorithmRequestTimeout)
-	modelTemperatureClient := llm.NewClient(cfg.BaseURL, cfg.APIKey, cfg.ModelRequestTimeout)
-	var kimiClient modeltemperature.Client
-	if strings.TrimSpace(cfg.KimiAPIKey) != "" {
-		kimiClient = llm.NewClient(cfg.KimiBaseURL, cfg.KimiAPIKey, cfg.ModelRequestTimeout)
-	}
-	return httpapi.NewHandlerWithModelTemperature(
-		barista.NewServiceWithClient(cfg, baristaClient),
-		algorithms.NewService(algorithmsClient, cfg.Model, cfg.AlgorithmRequestTimeout, cfg.AlgorithmPrompts),
-		temperature.NewService(cfg),
-		modeltemperature.NewService(modelTemperatureClient, kimiClient),
-	)
+func logConfig(logger *slog.Logger, requestID, result string, duration time.Duration, category string) {
+	logger.Info("barista.event", "source", "backend", "event", "config_read", "result", result, "correlation_id", requestID, "duration_ms", duration.Milliseconds(), "error_category", category)
 }
 
-func parseFlags(args []string) (string, string, error) {
+func parseFlags(args []string) (string, error) {
 	flags := flag.NewFlagSet("api-server", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	configPath := flags.String("config", "config.yaml", "путь к YAML-конфигурации")
-	address := flags.String("addr", ":8080", "адрес прослушивания")
+	path := flags.String("config", "config.yaml", "путь к backend YAML")
 	if err := flags.Parse(args); err != nil {
-		return "", "", fmt.Errorf("разбор аргументов: %w", err)
+		return "", fmt.Errorf("разбор аргументов: %w", err)
 	}
-	if flags.NArg() != 0 || strings.TrimSpace(*configPath) == "" || strings.TrimSpace(*address) == "" {
-		return "", "", fmt.Errorf("некорректные аргументы")
+	if flags.NArg() != 0 || strings.TrimSpace(*path) == "" {
+		return "", fmt.Errorf("некорректные аргументы")
 	}
-	return *configPath, *address, nil
+	return *path, nil
 }
-
-func serve(server *http.Server) error {
+func serve(server *http.Server, closeStore func()) error {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(signals)
-	go func() { <-signals; _ = server.Shutdown(context.Background()) }()
+	go func() {
+		<-signals
+		closeStore()
+		shutdownContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownContext)
+	}()
 	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}

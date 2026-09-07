@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
+import type { ReactNode } from "react";
 import "./globals.css";
-import { AlgorithmsProvider } from "@/features/algorithms/algorithms-store";
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.SITE_URL ?? "http://localhost:3000"),
@@ -28,10 +28,10 @@ export const metadata: Metadata = {
   },
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="ru">
-      <body><AlgorithmsProvider>{children}</AlgorithmsProvider></body>
+      <body>{children}</body>
     </html>
   );
 }

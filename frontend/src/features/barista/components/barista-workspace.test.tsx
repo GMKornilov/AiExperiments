@@ -1,104 +1,117 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BaristaWorkspace } from "./barista-workspace";
 
-const controlledAnswer = {
-  summary: "**Помол** слишком крупный.",
-  focus_points: ["Сделайте `помол` мельче.", "Продлите экстракцию.", "Используйте свежую воду."],
-  recipe: {
-    coffee_g: 18,
-    water_g: 36,
-    temperature_c: 93,
-    brew_time_sec: 28,
-  },
-};
+const dialog = (messages: unknown[] = []) => ({ id: "dialog-123", title: "Новый диалог", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", messages });
+const json = (body: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } }));
 
-afterEach(() => {
-  cleanup();
-  vi.unstubAllGlobals();
-});
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("BaristaWorkspace", () => {
-  it("switches response mode from the keyboard", () => {
-    render(<BaristaWorkspace />);
-    const freeMode = screen.getByLabelText("Свободный");
-    const controlledMode = screen.getByLabelText("Структурный");
-
-    freeMode.focus();
-    fireEvent.keyDown(freeMode, { key: "ArrowRight" });
-
-    expect(controlledMode).toBeChecked();
-    expect(controlledMode).toHaveFocus();
-  });
-
-  it("renders controlled summary and focus points as Markdown, with recipe and raw response", async () => {
-    const raw = JSON.stringify(controlledAnswer);
-    const fetchMock = vi.fn().mockResolvedValue(
-      Response.json({ mode: "controlled", raw, data: controlledAnswer }),
-    );
+  it("не повторяет отправку, если сверка уже получила успешный ответ", async () => {
+    const failed = { id: "m1", client_message_id: "c1", role: "user", text: "Кофе?", status: "error", created_at: "2026-01-01T00:00:00Z" };
+    const answer = { id: "a1", role: "assistant", text: "Ответ", status: "success", created_at: "2026-01-01T00:00:01Z" };
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => json({ dialogs: [dialog([failed])], selected_dialog_id: "dialog-123" }))
+      .mockImplementationOnce(() => json(dialog([failed, answer])));
     vi.stubGlobal("fetch", fetchMock);
-
     render(<BaristaWorkspace />);
-    fireEvent.click(screen.getByLabelText("Структурный"));
-    fireEvent.change(screen.getByLabelText("Ваш вопрос"), {
-      target: { value: "Почему эспрессо кислый?" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /Спросить бариста/ }));
-
-    expect(await screen.findByText("Помол", { selector: "strong" })).toBeVisible();
-    expect(screen.getByText("помол", { selector: "code" })).toBeVisible();
-    expect(screen.getByText("Кратко")).toBeVisible();
-    expect(screen.getByText("На что обратить внимание")).toBeVisible();
-    expect(screen.getByText("18 г")).toBeVisible();
-    expect(screen.getByText("93 °C")).toBeVisible();
-    expect(screen.getAllByRole("listitem")).toHaveLength(3);
-
-    const rawDetails = screen.getByText(/Сырой ответ/).closest("details");
-    expect(rawDetails).not.toHaveAttribute("open");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/chat",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({
-          mode: "controlled",
-          prompt: "Почему эспрессо кислый?",
-        }),
-      }),
-    );
+    await screen.findByRole("button", { name: "Повторить отправку" });
+    fireEvent.click(screen.getByRole("button", { name: "Повторить отправку" }));
+    expect(await screen.findByText("Ответ")).toBeVisible();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/retry"))).toBe(false);
   });
 
-  it("renders a free-form answer as Markdown and preserves raw source in a closed spoiler", async () => {
-    const raw = "## Настройка\n\n**Сделайте помол мельче.**";
-    const fetchMock = vi.fn().mockResolvedValue(
-      Response.json({ mode: "free", raw, data: null }),
-    );
+  it("оставляет pending без параллельного retry", async () => {
+    const pending = { id: "m1", client_message_id: "c1", role: "user", text: "Кофе?", status: "pending", created_at: "2026-01-01T00:00:00Z" };
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => json({ dialogs: [dialog([{ ...pending, status: "error" }])], selected_dialog_id: "dialog-123" }))
+      .mockImplementationOnce(() => json(dialog([pending])));
     vi.stubGlobal("fetch", fetchMock);
-
     render(<BaristaWorkspace />);
-    fireEvent.change(screen.getByLabelText("Ваш вопрос"), {
-      target: { value: "Как улучшить чашку?" },
-    });
-    fireEvent.submit(screen.getByRole("button", { name: /Спросить бариста/ }).closest("form")!);
-
-    expect(await screen.findByRole("heading", { name: "Настройка", level: 2 })).toBeVisible();
-    expect(screen.getByText("Сделайте помол мельче.", { selector: "strong" })).toBeVisible();
-    expect(screen.getByText("Свободный режим")).toBeVisible();
-
-    const rawDetails = screen.getByText(/Сырой ответ/).closest("details");
-    expect(rawDetails).not.toHaveAttribute("open");
-    expect(rawDetails?.querySelector("pre")?.textContent).toBe(raw);
+    await screen.findByRole("button", { name: "Повторить отправку" });
+    fireEvent.click(screen.getByRole("button", { name: "Повторить отправку" }));
+    await screen.findByText("Бариста готовит ответ…");
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/retry"))).toBe(false);
   });
 
-  it("shows a safe error state", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Backend недоступен")));
-
+  it("не отправляет local-only retry, когда обязательная сверка недоступна", async () => {
+    const localError = { id: "local-c1", client_message_id: "c1", role: "user", text: "Кофе?", status: "error", created_at: "2026-01-01T00:00:00Z", localOnly: true };
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => json({ dialogs: [dialog([localError])], selected_dialog_id: "dialog-123" }))
+      .mockRejectedValueOnce(new Error("offline"));
+    vi.stubGlobal("fetch", fetchMock);
     render(<BaristaWorkspace />);
-    fireEvent.change(screen.getByLabelText("Ваш вопрос"), {
-      target: { value: "Нужен рецепт" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /Спросить бариста/ }));
+    await screen.findByRole("button", { name: "Повторить отправку" });
+    fireEvent.click(screen.getByRole("button", { name: "Повторить отправку" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Не удалось получить ответ"));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Backend недоступен"));
+  it("сохраняет один persisted user bubble при неудачном retry", async () => {
+    const failed = { id: "m1", client_message_id: "c1", role: "user", text: "Кофе?", status: "error", created_at: "2026-01-01T00:00:00Z" };
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => json({ dialogs: [dialog([failed])], selected_dialog_id: "dialog-123" }))
+      .mockImplementationOnce(() => json(dialog([failed])))
+      .mockRejectedValueOnce(new Error("offline"));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<BaristaWorkspace />);
+    await screen.findByRole("button", { name: "Повторить отправку" });
+    fireEvent.click(screen.getByRole("button", { name: "Повторить отправку" }));
+    await waitFor(() => expect(screen.getAllByText("Кофе?")).toHaveLength(1));
+    expect(screen.getByRole("button", { name: "Повторить отправку" })).toBeVisible();
+  });
+
+  it("сохраняет optimistic bubble при polling до принятия сервером", async () => {
+    let resolveSend!: (value: Response) => void;
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => json({ dialogs: [dialog()], selected_dialog_id: "dialog-123" }))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveSend = resolve; }))
+      .mockImplementationOnce(() => json({ dialogs: [dialog()], selected_dialog_id: "dialog-123" }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<BaristaWorkspace />);
+    fireEvent.change(await screen.findByLabelText("Ваш вопрос"), { target: { value: "Не теряй меня" } });
+    vi.useFakeTimers();
+    fireEvent.click(screen.getByRole("button", { name: "Отправить" }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(screen.getByText("Не теряй меня")).toBeVisible();
+    resolveSend(new Response(JSON.stringify(dialog()), { headers: { "Content-Type": "application/json" } }));
+  });
+
+  it("считает лимит ввода Unicode code points", async () => {
+    const request = vi.fn()
+      .mockImplementationOnce(() => json({ dialogs: [dialog()], selected_dialog_id: "dialog-123" }))
+      .mockImplementationOnce(() => json(dialog()));
+    vi.stubGlobal("fetch", request);
+    render(<BaristaWorkspace />);
+    const value = "😀".repeat(4000);
+    fireEvent.change(await screen.findByLabelText("Ваш вопрос"), { target: { value } });
+    fireEvent.click(screen.getByRole("button", { name: "Отправить" }));
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    expect(JSON.parse(request.mock.calls[1][1].body).text).toBe(value);
+  });
+
+  it("удаление не возвращает поздний ответ", async () => {
+    let resolveSend!: (value: Response) => void;
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => json({ dialogs: [dialog()], selected_dialog_id: "dialog-123" }))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => { resolveSend = resolve; }))
+      .mockImplementationOnce(() => Promise.resolve(new Response(null, { status: 204 })))
+      .mockImplementationOnce(() => json({ dialogs: [], selected_dialog_id: null }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<BaristaWorkspace />);
+    await screen.findByLabelText("Ваш вопрос");
+    fireEvent.change(screen.getByLabelText("Ваш вопрос"), { target: { value: "Кофе?" } });
+    fireEvent.click(screen.getByRole("button", { name: "Отправить" }));
+    fireEvent.click(screen.getByRole("button", { name: /Удалить диалог/ }));
+    const cancel = screen.getByRole("button", { name: "Отмена" });
+    expect(cancel).toHaveFocus();
+    const confirm = screen.getByRole("button", { name: "Удалить" });
+    confirm.focus();
+    fireEvent.keyDown(screen.getByRole("alertdialog").parentElement!, { key: "Tab" });
+    expect(cancel).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "Удалить" }));
+    resolveSend(new Response(JSON.stringify(dialog([{ id: "a1", role: "assistant", text: "Поздно", status: "success", created_at: "2026-01-01T00:00:01Z" }])), { headers: { "Content-Type": "application/json" } }));
+    await waitFor(() => expect(screen.queryByText("Поздно")).not.toBeInTheDocument());
   });
 });

@@ -4,26 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"net"
 	"strings"
 )
 
 type requestIDKey struct{}
-
-// redactDiagnostic excludes the configured credential and endpoint from opt-in logs.
-func (c *Client) redactDiagnostic(value string) string {
-	for _, secret := range []string{c.apiKey, c.baseURL} {
-		if secret == "" {
-			continue
-		}
-		encoded, _ := json.Marshal(secret)
-		value = strings.ReplaceAll(value, string(encoded[1:len(encoded)-1]), "[REDACTED]")
-		value = strings.ReplaceAll(value, secret, "[REDACTED]")
-	}
-	return value
-}
 
 // WithRequestID uses a bounded hexadecimal correlation ID or generates a new one.
 func WithRequestID(ctx context.Context, candidate string) context.Context {

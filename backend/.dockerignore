@@ -2,6 +2,10 @@
 bin
 tmp
 config.yaml
+llm.yaml
+.env
+.env.*
+!.env.example
 .gocache
 frontend/node_modules
 frontend/.next
