@@ -1,13 +1,6 @@
-.pageShell {
-  width: min(100% - 2.5rem, 880px);
-  margin: 0 auto;
-  padding: clamp(3.5rem, 9vw, 7rem) 0 2rem;
-}
+.pageShell { width:100%; margin:0; padding:clamp(1.25rem,3vw,2.5rem); }
 
-.masthead {
-  max-width: 680px;
-  margin-bottom: 3rem;
-}
+.masthead { margin-bottom:1.5rem; }
 
 .eyebrow {
   margin: 0 0 0.7rem;
@@ -32,7 +25,6 @@
 }
 
 .intro {
-  max-width: 560px;
   margin: 1.5rem 0 0;
   color: var(--color-muted);
   font-size: clamp(1.05rem, 2.5vw, 1.22rem);
@@ -47,8 +39,5 @@
 }
 
 @media (max-width: 620px) {
-  .pageShell {
-    width: min(100% - 1.5rem, 880px);
-    padding-top: 3rem;
-  }
+  .pageShell { padding: .75rem; }
 }

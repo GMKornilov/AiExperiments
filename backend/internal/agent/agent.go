@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"strings"
 	"sync"
@@ -51,6 +52,23 @@ type Snapshot struct {
 	Model        string
 	SystemPrompt string
 	Timeout      time.Duration
+	Temperature  float64
+}
+
+// DialogSnapshot captures immutable configurations for chat and title generation.
+type DialogSnapshot struct {
+	Chat Snapshot
+	Text Snapshot
+}
+
+func (s DialogSnapshot) Validate() error {
+	if err := s.Chat.Validate(); err != nil {
+		return fmt.Errorf("chat: %w", err)
+	}
+	if err := s.Text.Validate(); err != nil {
+		return fmt.Errorf("text: %w", err)
+	}
+	return nil
 }
 
 // Validate checks the part of an LLM setup used by a conversation.
@@ -69,6 +87,9 @@ func (s Snapshot) Validate() error {
 	}
 	if s.Timeout <= 0 {
 		return fmt.Errorf("таймаут LLM должен быть больше нуля")
+	}
+	if math.IsNaN(s.Temperature) || math.IsInf(s.Temperature, 0) || s.Temperature < 0 || s.Temperature > 2 {
+		return fmt.Errorf("temperature должна быть конечным числом от 0 до 2")
 	}
 	return nil
 }

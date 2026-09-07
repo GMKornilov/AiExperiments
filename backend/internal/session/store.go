@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -12,15 +13,17 @@ import (
 	"time"
 
 	"aichallenge/week_1/task_1/internal/agent"
+	"aichallenge/week_1/task_1/internal/llm"
 )
 
 // Dialog is the safe public representation of a dialog.
 type Dialog struct {
-	ID        string          `json:"id"`
-	Title     string          `json:"title"`
-	Messages  []agent.Message `json:"messages"`
-	CreatedAt time.Time       `json:"created_at"`
-	UpdatedAt time.Time       `json:"updated_at"`
+	ID          string          `json:"id"`
+	Title       string          `json:"title"`
+	TitleStatus string          `json:"title_status"`
+	Messages    []agent.Message `json:"messages"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
 }
 
 // Listing is a browser session's dialog list and selected dialog ID.
@@ -30,8 +33,10 @@ type Listing struct {
 }
 
 type storedDialog struct {
-	dialog Dialog
-	agent  *agent.Conversation
+	dialog       Dialog
+	agent        *agent.Conversation
+	textSnapshot agent.Snapshot
+	titleCancel  context.CancelFunc
 }
 
 type browserSession struct {
@@ -49,12 +54,17 @@ type Store struct {
 	provider agent.Provider
 	now      func() time.Time
 	observer AttemptObserver
+	titleWG  sync.WaitGroup
+	closed   bool
 }
 
 // AttemptObserver observes actual provider calls after acceptance.
 type AttemptObserver struct {
-	Started  func(context.Context, string, string)
-	Finished func(context.Context, string, string, time.Duration, Dialog)
+	Started        func(context.Context, string, string)
+	Finished       func(context.Context, string, string, time.Duration, Dialog)
+	TitleStarted   func(context.Context, string, string)
+	TitleFinished  func(context.Context, string, string, time.Duration, Dialog, string)
+	TitleCancelled func(context.Context, string, string)
 }
 
 // NewStore creates an empty store.
@@ -71,22 +81,38 @@ func (s *Store) SetAttemptObserver(observer AttemptObserver) {
 // Close cancels every outstanding provider request during service shutdown.
 func (s *Store) Close() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.closed = true
 	for _, browser := range s.sessions {
 		if browser.cancel != nil {
 			browser.cancel()
 			browser.cancel = nil
 			browser.pending = false
 		}
+		for _, dialog := range browser.dialogs {
+			if dialog.titleCancel != nil {
+				dialog.titleCancel()
+				dialog.titleCancel = nil
+			}
+		}
+	}
+	s.mu.Unlock()
+	done := make(chan struct{})
+	go func() { s.titleWG.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
 	}
 }
 
 // Create adds and selects a new empty dialog in one browser session.
-func (s *Store) Create(sessionID string, snapshot agent.Snapshot) (Dialog, error) {
+func (s *Store) Create(sessionID string, snapshot agent.DialogSnapshot) (Dialog, error) {
 	if strings.TrimSpace(sessionID) == "" {
 		return Dialog{}, fmt.Errorf("session ID не должен быть пустым")
 	}
-	conversation, err := agent.NewConversation(snapshot)
+	if err := snapshot.Validate(); err != nil {
+		return Dialog{}, err
+	}
+	conversation, err := agent.NewConversation(snapshot.Chat)
 	if err != nil {
 		return Dialog{}, err
 	}
@@ -95,11 +121,14 @@ func (s *Store) Create(sessionID string, snapshot agent.Snapshot) (Dialog, error
 		return Dialog{}, err
 	}
 	now := s.now()
-	dialog := Dialog{ID: id, Title: "Новый диалог", CreatedAt: now, UpdatedAt: now}
+	dialog := Dialog{ID: id, Title: "Новый диалог", TitleStatus: "idle", CreatedAt: now, UpdatedAt: now}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return Dialog{}, fmt.Errorf("хранилище закрыто")
+	}
 	session := s.getOrCreateLocked(sessionID)
-	session.dialogs[id] = &storedDialog{dialog: dialog, agent: conversation}
+	session.dialogs[id] = &storedDialog{dialog: dialog, agent: conversation, textSnapshot: snapshot.Text}
 	session.selected = id
 	return cloneDialog(dialog), nil
 }
@@ -167,6 +196,11 @@ func (s *Store) Delete(sessionID, dialogID string) bool {
 	if session == nil || session.dialogs[dialogID] == nil {
 		return false
 	}
+	stored := session.dialogs[dialogID]
+	if stored.titleCancel != nil {
+		stored.titleCancel()
+		stored.titleCancel = nil
+	}
 	delete(session.dialogs, dialogID)
 	if session.selected == dialogID {
 		session.selected = ""
@@ -183,6 +217,10 @@ func (s *Store) Delete(sessionID, dialogID string) bool {
 // Send accepts a deduplicated client message and completes one agent attempt.
 func (s *Store) Send(ctx context.Context, sessionID, dialogID, clientID, text string) (Dialog, error) {
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return Dialog{}, fmt.Errorf("хранилище закрыто")
+	}
 	if strings.TrimSpace(clientID) == "" {
 		s.mu.Unlock()
 		return Dialog{}, fmt.Errorf("client message ID не должен быть пустым")
@@ -207,10 +245,80 @@ func (s *Store) Send(ctx context.Context, sessionID, dialogID, clientID, text st
 		s.mu.Unlock()
 		return Dialog{}, err
 	}
-	if len(stored.agent.Messages()) == 1 {
+	if len(stored.agent.Messages()) == 1 && stored.dialog.TitleStatus == "idle" {
 		stored.dialog.Title = titleFrom(text)
+		stored.dialog.TitleStatus = "pending"
+		titleContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), stored.textSnapshot.Timeout)
+		stored.titleCancel = cancel
+		observer := s.observer
+		s.titleWG.Add(1)
+		go s.runTitle(titleContext, cancel, sessionID, dialogID, stored, message.ID, text, observer)
 	}
 	return s.runAttempt(ctx, sessionID, dialogID, stored, session, message.ID)
+}
+
+func (s *Store) runTitle(ctx context.Context, cancel context.CancelFunc, sessionID, dialogID string, stored *storedDialog, messageID, text string, observer AttemptObserver) {
+	defer s.titleWG.Done()
+	defer cancel()
+	started := time.Now()
+	if observer.TitleStarted != nil {
+		observer.TitleStarted(ctx, dialogID, messageID)
+	}
+	answer, err := s.provider.Complete(ctx, stored.textSnapshot, []llm.Message{{Role: "system", Content: stored.textSnapshot.SystemPrompt}, {Role: "user", Content: text}})
+	if err == nil && ctx.Err() != nil {
+		err = ctx.Err()
+	}
+	s.mu.Lock()
+	browser := s.sessions[sessionID]
+	if browser == nil || browser.dialogs[dialogID] != stored {
+		s.mu.Unlock()
+		if observer.TitleCancelled != nil {
+			observer.TitleCancelled(ctx, dialogID, messageID)
+		}
+		return
+	}
+	if stored.titleCancel != nil {
+		stored.titleCancel = nil
+	}
+	if err != nil || ctx.Err() != nil {
+		stored.dialog.TitleStatus = "error"
+	} else {
+		stored.dialog.Title = normalizeTitle(answer, text)
+		stored.dialog.TitleStatus = "success"
+	}
+	dialog := s.dialogCopyLocked(stored)
+	s.mu.Unlock()
+	if errors.Is(ctx.Err(), context.Canceled) {
+		if observer.TitleCancelled != nil {
+			observer.TitleCancelled(ctx, dialogID, messageID)
+		}
+		return
+	}
+	if observer.TitleFinished != nil {
+		observer.TitleFinished(ctx, dialogID, messageID, time.Since(started), dialog, titleErrorCategory(err))
+	}
+}
+
+func titleErrorCategory(err error) string {
+	if err == nil {
+		return ""
+	}
+	var typed *agent.AttemptError
+	if errors.As(err, &typed) {
+		return string(typed.Category)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	return "provider"
+}
+
+func normalizeTitle(answer, fallback string) string {
+	answer = strings.Join(strings.Fields(answer), " ")
+	if answer == "" {
+		return titleFrom(fallback)
+	}
+	return titleFrom(answer)
 }
 
 // Retry reruns an errored user message without adding another user message.

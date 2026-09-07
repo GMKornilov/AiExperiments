@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BaristaWorkspace } from "./barista-workspace";
 
-const dialog = (messages: unknown[] = []) => ({ id: "dialog-123", title: "Новый диалог", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", messages });
+const dialog = (messages: unknown[] = [], title_status: "idle" | "pending" | "success" | "error" = "idle") => ({ id: "dialog-123", title: "Новый диалог", title_status, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", messages });
 const json = (body: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } }));
 
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
@@ -89,6 +89,27 @@ describe("BaristaWorkspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Отправить" }));
     await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
     expect(JSON.parse(request.mock.calls[1][1].body).text).toBe(value);
+  });
+
+  it("копирует полный ID чата и не блокирует composer при pending названии", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ dialogs: [dialog([], "pending")], selected_dialog_id: "dialog-123" })));
+    render(<BaristaWorkspace />);
+    await screen.findByLabelText("Ваш вопрос");
+    expect(screen.getByLabelText("Ваш вопрос")).not.toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Копировать ID чата" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("dialog-123"));
+    expect(screen.getByText("ID чата скопирован")).toBeInTheDocument();
+  });
+
+  it("объявляет безопасную ошибку, если ID чата не удалось скопировать", async () => {
+    Object.assign(navigator, { clipboard: { writeText: vi.fn().mockRejectedValue(new Error("denied")) } });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ dialogs: [dialog()], selected_dialog_id: "dialog-123" })));
+    render(<BaristaWorkspace />);
+    await screen.findByRole("button", { name: "Копировать ID чата" });
+    fireEvent.click(screen.getByRole("button", { name: "Копировать ID чата" }));
+    expect(await screen.findByText("Не удалось скопировать ID чата.")).toBeVisible();
   });
 
   it("удаление не возвращает поздний ответ", async () => {

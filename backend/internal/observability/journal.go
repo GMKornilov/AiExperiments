@@ -27,14 +27,14 @@ type Journal struct {
 	logText bool
 	logger  *slog.Logger
 	deleted map[string]bool
-	secrets map[string]string
+	secrets map[string][]string
 }
 
 func NewJournal(logText bool, logger *slog.Logger) *Journal {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Journal{logText: logText, logger: logger, deleted: make(map[string]bool), secrets: make(map[string]string)}
+	return &Journal{logText: logText, logger: logger, deleted: make(map[string]bool), secrets: make(map[string][]string)}
 }
 
 func (j *Journal) Log(record Record, credential string) {
@@ -45,7 +45,7 @@ func (j *Journal) Log(record Record, credential string) {
 	if !j.logText {
 		record.Text = ""
 	} else {
-		for _, secret := range []string{j.secrets[record.DialogID], credential} {
+		for _, secret := range append(j.secrets[record.DialogID], credential) {
 			if secret != "" {
 				record.Text = strings.ReplaceAll(record.Text, secret, "[REDACTED]")
 			}
@@ -67,12 +67,21 @@ func (j *Journal) Log(record Record, credential string) {
 }
 
 func (j *Journal) SetSecret(dialogID, secret string) {
-	if dialogID == "" || secret == "" {
+	j.SetSecrets(dialogID, secret)
+}
+
+// SetSecrets registers every credential captured by one dialog snapshot.
+func (j *Journal) SetSecrets(dialogID string, secrets ...string) {
+	if dialogID == "" {
 		return
 	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	j.secrets[dialogID] = secret
+	for _, secret := range secrets {
+		if secret != "" {
+			j.secrets[dialogID] = append(j.secrets[dialogID], secret)
+		}
+	}
 }
 
 func (j *Journal) Logs(dialogID string) []Record {

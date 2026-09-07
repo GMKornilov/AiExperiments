@@ -20,7 +20,7 @@ import (
 const maxBody = 64 << 10
 
 type Store interface {
-	Create(string, agent.Snapshot) (session.Dialog, error)
+	Create(string, agent.DialogSnapshot) (session.Dialog, error)
 	List(string) session.Listing
 	Get(string, string) (session.Dialog, bool)
 	Exists(string) bool
@@ -32,7 +32,7 @@ type Store interface {
 
 type Handler struct {
 	store        Store
-	loadSnapshot func() (agent.Snapshot, error)
+	loadSnapshot func() (agent.DialogSnapshot, error)
 	journal      *observability.Journal
 }
 type statusWriter struct {
@@ -51,7 +51,7 @@ func (w *statusWriter) Write(data []byte) (int, error) {
 	return w.ResponseWriter.Write(data)
 }
 
-func New(store Store, loadSnapshot func() (agent.Snapshot, error), journal *observability.Journal) http.Handler {
+func New(store Store, loadSnapshot func() (agent.DialogSnapshot, error), journal *observability.Journal) http.Handler {
 	h := &Handler{store: store, loadSnapshot: loadSnapshot, journal: journal}
 	if observed, ok := store.(interface{ SetAttemptObserver(session.AttemptObserver) }); ok {
 		observed.SetAttemptObserver(session.AttemptObserver{
@@ -62,18 +62,31 @@ func New(store Store, loadSnapshot func() (agent.Snapshot, error), journal *obse
 				result, category, answer := attemptOutcome(dialog)
 				h.logContext(ctx, "backend", "llm_finish", result, dialogID, messageID, elapsed, category, answer)
 			},
+			TitleStarted: func(ctx context.Context, dialogID, messageID string) {
+				h.logContext(ctx, "backend", "title_start", "success", dialogID, messageID, 0, "", "")
+			},
+			TitleFinished: func(ctx context.Context, dialogID, messageID string, elapsed time.Duration, dialog session.Dialog, category string) {
+				event, result := "title_finish", "success"
+				if category != "" {
+					event, result = "title_error", "failure"
+				}
+				h.logContext(ctx, "backend", event, result, dialogID, messageID, elapsed, category, dialog.Title)
+			},
+			TitleCancelled: func(ctx context.Context, dialogID, messageID string) {
+				h.logContext(ctx, "backend", "title_cancelled", "success", dialogID, messageID, 0, "", "")
+			},
 		})
 	}
 	return h
 }
 
-func SnapshotLoader(path string) func() (agent.Snapshot, error) {
-	return func() (agent.Snapshot, error) {
+func SnapshotLoader(path string) func() (agent.DialogSnapshot, error) {
+	return func() (agent.DialogSnapshot, error) {
 		cfg, err := config.LoadLLM(path)
 		if err != nil {
-			return agent.Snapshot{}, err
+			return agent.DialogSnapshot{}, err
 		}
-		return agent.Snapshot{BaseURL: cfg.BaseURL, APIKey: cfg.APIKey, Model: cfg.Model, SystemPrompt: cfg.SystemPrompt, Timeout: cfg.RequestTimeout}, nil
+		return agent.DialogSnapshot{Chat: agent.Snapshot{BaseURL: cfg.Chat.BaseURL, APIKey: cfg.Chat.APIKey, Model: cfg.Chat.Model, SystemPrompt: cfg.Chat.SystemPrompt, Timeout: cfg.Chat.RequestTimeout, Temperature: cfg.Chat.Temperature}, Text: agent.Snapshot{BaseURL: cfg.Text.BaseURL, APIKey: cfg.Text.APIKey, Model: cfg.Text.Model, SystemPrompt: cfg.Text.SystemPrompt, Timeout: cfg.Text.RequestTimeout, Temperature: cfg.Text.Temperature}}, nil
 	}
 }
 
@@ -186,7 +199,7 @@ func (h *Handler) dialogs(w http.ResponseWriter, r *http.Request, sid string) {
 			h.fail(w, http.StatusServiceUnavailable, "config")
 			return
 		}
-		h.journal.SetSecret(d.ID, snap.APIKey)
+		h.journal.SetSecrets(d.ID, snap.Chat.APIKey, snap.Text.APIKey)
 		h.log(r, "backend", "config_read", "success", d.ID, "", time.Since(started), "", "")
 		h.log(r, "backend", "dialog_created", "success", d.ID, "", time.Since(started), "", "")
 		h.ok(w, dialogDTO(d))
@@ -306,7 +319,7 @@ type eventRequest struct {
 	DurationMS    int64  `json:"duration_ms"`
 }
 
-var allowedEvents = map[string]bool{"dialog_created": true, "dialog_selected": true, "dialog_deleted": true, "message_sent": true, "message_retried": true, "message_copied": true, "dialog_validation_failed": true, "message_failed": true, "admin_lookup": true, "admin_refresh": true, "bff_request_completed": true, "bff_request_failed": true}
+var allowedEvents = map[string]bool{"dialog_created": true, "dialog_selected": true, "dialog_deleted": true, "dialog_id_copied": true, "message_sent": true, "message_retried": true, "message_copied": true, "dialog_validation_failed": true, "message_failed": true, "admin_lookup": true, "admin_refresh": true, "bff_request_completed": true, "bff_request_failed": true}
 
 func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -419,15 +432,16 @@ type messageDTO struct {
 	ErrorCategory   string       `json:"error_category,omitempty"`
 }
 type dialogDTOType struct {
-	ID        string       `json:"id"`
-	Title     string       `json:"title"`
-	CreatedAt time.Time    `json:"created_at"`
-	UpdatedAt time.Time    `json:"updated_at"`
-	Messages  []messageDTO `json:"messages"`
+	ID          string       `json:"id"`
+	Title       string       `json:"title"`
+	TitleStatus string       `json:"title_status"`
+	CreatedAt   time.Time    `json:"created_at"`
+	UpdatedAt   time.Time    `json:"updated_at"`
+	Messages    []messageDTO `json:"messages"`
 }
 
 func dialogDTO(d session.Dialog) dialogDTOType {
-	out := dialogDTOType{ID: d.ID, Title: d.Title, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt, Messages: make([]messageDTO, 0, len(d.Messages))}
+	out := dialogDTOType{ID: d.ID, Title: d.Title, TitleStatus: d.TitleStatus, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt, Messages: make([]messageDTO, 0, len(d.Messages))}
 	for _, m := range d.Messages {
 		out.Messages = append(out.Messages, messageDTO{ID: m.ID, ClientMessageID: m.ClientID, Role: m.Role, Text: m.Text, Status: m.Status, CreatedAt: m.CreatedAt, ErrorCategory: m.ErrorCategory})
 	}

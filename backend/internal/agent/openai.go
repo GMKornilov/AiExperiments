@@ -12,7 +12,7 @@ import (
 type OpenAIProvider struct{}
 
 func (OpenAIProvider) Complete(ctx context.Context, snapshot Snapshot, messages []llm.Message) (string, error) {
-	answer, err := llm.NewClient(snapshot.BaseURL, snapshot.APIKey, snapshot.Timeout).ChatMessages(ctx, snapshot.Model, messages)
+	answer, err := llm.NewClient(snapshot.BaseURL, snapshot.APIKey, snapshot.Timeout).ChatMessages(ctx, snapshot.Model, messages, snapshot.Temperature)
 	if err != nil {
 		var upstream *llm.Error
 		if errors.As(err, &upstream) {

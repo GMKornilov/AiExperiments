@@ -14,7 +14,7 @@ import (
 
 type fakeStore struct{ dialogs map[string]session.Dialog }
 
-func (s *fakeStore) Create(_ string, _ agent.Snapshot) (session.Dialog, error) {
+func (s *fakeStore) Create(_ string, _ agent.DialogSnapshot) (session.Dialog, error) {
 	return session.Dialog{}, nil
 }
 func (s *fakeStore) List(_ string) session.Listing {
@@ -36,7 +36,7 @@ func (s *fakeStore) Retry(context.Context, string, string, string) (session.Dial
 
 func TestEventsRejectForeignDialog(t *testing.T) {
 	store := &fakeStore{dialogs: map[string]session.Dialog{"own": {ID: "own"}}}
-	h := New(store, func() (agent.Snapshot, error) { return agent.Snapshot{}, nil }, observability.NewJournal(false, nil))
+	h := New(store, func() (agent.DialogSnapshot, error) { return agent.DialogSnapshot{}, nil }, observability.NewJournal(false, nil))
 	r := httptest.NewRequest(http.MethodPost, "/api/events", strings.NewReader(`{"event":"message_copied","dialog_id":"other"}`))
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("X-Session-ID", "s")
@@ -49,7 +49,7 @@ func TestEventsRejectForeignDialog(t *testing.T) {
 
 func TestAdminUnknownStaysUnknown(t *testing.T) {
 	store := &fakeStore{dialogs: map[string]session.Dialog{}}
-	h := New(store, func() (agent.Snapshot, error) { return agent.Snapshot{}, nil }, observability.NewJournal(false, nil))
+	h := New(store, func() (agent.DialogSnapshot, error) { return agent.DialogSnapshot{}, nil }, observability.NewJournal(false, nil))
 	for range 2 {
 		r := httptest.NewRequest(http.MethodGet, "/api/admin/logs?dialog_id=missing&action=lookup", nil)
 		w := httptest.NewRecorder()
@@ -63,7 +63,7 @@ func TestAdminUnknownStaysUnknown(t *testing.T) {
 func TestInvalidOwnedMessageIsLoggedForDialog(t *testing.T) {
 	store := &fakeStore{dialogs: map[string]session.Dialog{"owned": {ID: "owned"}}}
 	journal := observability.NewJournal(false, nil)
-	h := New(store, func() (agent.Snapshot, error) { return agent.Snapshot{}, nil }, journal)
+	h := New(store, func() (agent.DialogSnapshot, error) { return agent.DialogSnapshot{}, nil }, journal)
 	r := httptest.NewRequest(http.MethodPost, "/api/dialogs/owned/messages", strings.NewReader(`{"client_message_id":"id","text":" "}`))
 	r.Header.Set("X-Session-ID", "s")
 	w := httptest.NewRecorder()

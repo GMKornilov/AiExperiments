@@ -24,11 +24,13 @@ export function BaristaWorkspace() {
   const [error, setError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Dialog | null>(null);
+  const [idCopyStatus, setIDCopyStatus] = useState("");
   const removed = useRef(new Set<string>());
   const retrying = useRef(new Set<string>());
 
   const selected = dialogs.find((dialog) => dialog.id === selectedID) ?? null;
-  const sessionPending = dialogs.some(hasPending);
+  const messagePending = dialogs.some(hasPending);
+  const sessionPending = dialogs.some((dialog) => hasPending(dialog) || dialog.title_status === "pending");
 
   const reconcile = async () => {
     const list = await baristaClient.list();
@@ -54,6 +56,7 @@ export function BaristaWorkspace() {
 
   async function createDialog() {
     setError(null);
+    setIDCopyStatus("");
     try {
       const dialog = await baristaClient.create();
       setDialogs((current) => sortDialogs([dialog, ...current]));
@@ -64,6 +67,7 @@ export function BaristaWorkspace() {
   }
 
   async function selectDialog(id: string) {
+    setIDCopyStatus("");
     setSelectedID(id);
     setSidebarOpen(false);
     try {
@@ -94,7 +98,7 @@ export function BaristaWorkspace() {
 
   async function send(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
-    if (!selected || sessionPending || hasError(selected)) return;
+    if (!selected || messagePending || hasError(selected)) return;
     const normalized = text.trim();
     if (!normalized || Array.from(normalized).length > 4000) {
       setError("Введите вопрос длиной до 4 000 символов.");
@@ -118,7 +122,7 @@ export function BaristaWorkspace() {
   }
 
   async function retry(message: BaristaMessage) {
-    if (!selected || sessionPending || retrying.current.has(message.id)) return;
+    if (!selected || messagePending || retrying.current.has(message.id)) return;
     retrying.current.add(message.id);
     setError(null);
     let current: Dialog | undefined;
@@ -156,7 +160,13 @@ export function BaristaWorkspace() {
     if (selected) void baristaClient.event("message_copied", { dialog_id: selected.id, message_id: message.id });
   }
 
-  const composerDisabled = !selected || sessionPending || (selected && hasError(selected));
+  async function copyDialogID() {
+    if (!selected) return;
+    try { await navigator.clipboard.writeText(selected.id); setIDCopyStatus("ID чата скопирован"); void baristaClient.event("dialog_id_copied", { dialog_id: selected.id }); }
+    catch { setIDCopyStatus("Не удалось скопировать ID чата."); }
+  }
+
+  const composerDisabled = !selected || messagePending || (selected && hasError(selected));
   const dialogsLabel = useMemo(() => `${dialogs.length} диалогов`, [dialogs.length]);
 
   return <div className={styles.shell}>
@@ -174,7 +184,7 @@ export function BaristaWorkspace() {
     <main className={styles.chat} aria-busy={!ready}>
       {error && <p className={styles.error} role="alert">{error}</p>}
       {!ready ? <div className={styles.empty}>Загружаем диалоги…</div> : !selected ? <div className={styles.empty}><h2>Чашка ждёт вопроса</h2><p>Создайте диалог, чтобы поговорить с бариста.</p><button type="button" onClick={createDialog}>Новый диалог</button></div> : <>
-        <header className={styles.chatHeader}><div><h1>{selected.title}</h1><p>ID: {selected.id}</p></div></header>
+        <header className={styles.chatHeader}><div><h1>{selected.title}</h1><p>ID: {selected.id} <button type="button" className={styles.iconButton} aria-label="Копировать ID чата" onClick={() => void copyDialogID()}><CopyIcon /></button></p>{selected.title_status === "pending" && <p className={styles.titlePending} role="status">Обновляем название…</p>}<span className={styles.srOnly} aria-live="polite">{idCopyStatus}</span></div></header>
         <section className={styles.messages} aria-label="Переписка" aria-live="polite">
           {selected.messages.length === 0 && <div className={styles.empty}><p>Задайте вопрос о зёрнах, помоле или рецепте.</p></div>}
           {selected.messages.map((message) => <article className={`${styles.bubble} ${message.role === "user" ? styles.userBubble : styles.assistantBubble}`} key={message.id}>

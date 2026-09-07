@@ -11,14 +11,31 @@ func TestLoadLLMValidationAndRelativePrompt(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("system"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	valid := "base_url: https://example.test/v1\napi_key: secret\nmodel: model\nsystem_prompt_path: prompt.txt\n"
+	valid := "chat:\n  base_url: https://example.test/v1\n  api_key: secret\n  model: model\n  system_prompt_path: prompt.txt\ntext:\n  base_url: https://example.test/v1\n  api_key: secret\n  model: title\n  system_prompt_path: prompt.txt\n"
 	if err := os.WriteFile(filepath.Join(dir, "llm.yaml"), []byte(valid), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if cfg, err := LoadLLM(filepath.Join(dir, "llm.yaml")); err != nil || cfg.SystemPrompt != "system" {
+	if cfg, err := LoadLLM(filepath.Join(dir, "llm.yaml")); err != nil || cfg.Chat.SystemPrompt != "system" || cfg.Text.SystemPrompt != "system" {
 		t.Fatalf("LoadLLM = %#v, %v", cfg, err)
 	}
-	for _, body := range []string{"base_url: ftp://bad\napi_key: x\nmodel: x\nsystem_prompt_path: prompt.txt\n", "base_url: https://example.test\napi_key: x\nmodel: x\nsystem_prompt_path: missing.txt\n"} {
+	if cfg, err := LoadLLM(filepath.Join(dir, "llm.yaml")); err != nil || cfg.Chat.Temperature != 1 || cfg.Text.Temperature != 1 {
+		t.Fatalf("default temperatures %#v %v", cfg, err)
+	}
+	for _, temperature := range []string{"0", "2", "null", "3", "-1", "NaN", ".inf"} {
+		body := "chat:\n  base_url: https://example.test\n  api_key: x\n  model: x\n  temperature: " + temperature + "\n  system_prompt_path: prompt.txt\ntext:\n  base_url: https://example.test\n  api_key: x\n  model: x\n  temperature: 0\n  system_prompt_path: prompt.txt\n"
+		if err := os.WriteFile(filepath.Join(dir, "temperature.yaml"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadLLM(filepath.Join(dir, "temperature.yaml"))
+		valid := temperature == "0" || temperature == "2"
+		if valid && (err != nil || cfg.Chat.Temperature != map[string]float64{"0": 0, "2": 2}[temperature]) {
+			t.Fatalf("temperature %s: %#v %v", temperature, cfg, err)
+		}
+		if !valid && err == nil {
+			t.Fatalf("temperature %s accepted", temperature)
+		}
+	}
+	for _, body := range []string{"chat:\n  base_url: ftp://bad\n  api_key: x\n  model: x\n  system_prompt_path: prompt.txt\ntext:\n  base_url: https://example.test\n  api_key: x\n  model: x\n  system_prompt_path: prompt.txt\n", "chat:\n  base_url: https://example.test\n  api_key: x\n  model: x\n  system_prompt_path: missing.txt\ntext:\n  base_url: https://example.test\n  api_key: x\n  model: x\n  system_prompt_path: prompt.txt\n"} {
 		if err := os.WriteFile(filepath.Join(dir, "bad.yaml"), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -26,7 +43,7 @@ func TestLoadLLMValidationAndRelativePrompt(t *testing.T) {
 			t.Fatal("ожидалась ошибка конфигурации")
 		}
 	}
-	if err := os.WriteFile(filepath.Join(dir, "bad.yaml"), []byte("base_url: https://example.test\napi_key: x\nmodel: x\nrequest_timeout: 0s\nsystem_prompt_path: prompt.txt\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "bad.yaml"), []byte("chat:\n  base_url: https://example.test\n  api_key: x\n  model: x\n  request_timeout: 0s\n  system_prompt_path: prompt.txt\ntext:\n  base_url: https://example.test\n  api_key: x\n  model: x\n  system_prompt_path: prompt.txt\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadLLM(filepath.Join(dir, "bad.yaml")); err == nil {

@@ -23,8 +23,10 @@ cd backend && go run ./cmd/api-server --config=config.yaml
 docker compose up --build
 ```
 
-Compose монтирует `backend/config.yaml`, `backend/llm.yaml` и system prompt
-read-only. Изменения LLM YAML и prompt применяются к следующим созданным
+Compose монтирует `backend/config.yaml`, вложенный `backend/llm.yaml`, chat и
+title system prompts read-only. В `llm.yaml` обязательны секции `chat` для
+основного ответа и `text` для фонового названия первого вопроса. Изменения LLM
+YAML и prompt применяются к следующим созданным
 диалогам; backend config применяется после перезапуска. Локальные конфиги
 с ключами не включаются в образ и не должны попадать в Git.
 

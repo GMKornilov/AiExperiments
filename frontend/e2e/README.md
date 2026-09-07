@@ -12,7 +12,7 @@ node frontend/e2e/fixtures/provider.mjs
 (cd frontend && BARISTA_BACKEND_URL=http://127.0.0.1:18080 npm run dev -- --port 13000)
 ```
 
-`backend.yaml`, `llm.yaml` and the prompt in `fixtures/` contain an e2e-only
+`backend.yaml`, nested `llm.yaml` и оба prompt в `fixtures/` содержат e2e-only
 dummy credential. Set `BARISTA_E2E_URL` when using another frontend URL.
 
 ```sh

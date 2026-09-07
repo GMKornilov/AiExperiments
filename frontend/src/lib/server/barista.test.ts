@@ -3,7 +3,7 @@ import { createDialog, listDialogs, sendMessage } from "./barista";
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
-const dialog = { id: "d", title: "Новый диалог", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", messages: [] };
+const dialog = { id: "d", title: "Новый диалог", title_status: "idle", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", messages: [] };
 
 describe("barista BFF", () => {
   it("creates a HttpOnly session cookie and forwards only its ID", async () => {

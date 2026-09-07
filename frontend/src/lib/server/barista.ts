@@ -6,7 +6,7 @@ const timeoutMilliseconds = 35_000;
 const bodyTimeoutMilliseconds = 10_000;
 const sessionCookie = "barista_session";
 const errorCategories = new Set(["config", "validation", "network", "timeout", "provider", "invalid_response", "not_found", "busy"]);
-const eventNames = new Set(["dialog_created", "dialog_selected", "dialog_deleted", "message_sent", "message_retried", "message_copied", "dialog_validation_failed", "message_failed", "admin_lookup", "admin_refresh", "bff_request_completed", "bff_request_failed"]);
+const eventNames = new Set(["dialog_created", "dialog_selected", "dialog_deleted", "dialog_id_copied", "message_sent", "message_retried", "message_copied", "dialog_validation_failed", "message_failed", "admin_lookup", "admin_refresh", "bff_request_completed", "bff_request_failed"]);
 
 type JSONRecord = Record<string, unknown>;
 
@@ -118,7 +118,7 @@ function projectMessage(value: unknown): JSONRecord | null {
 function projectDialog(value: unknown): JSONRecord | null {
   if (!value || typeof value !== "object") return null;
   const item = value as JSONRecord;
-  if (!only(item, ["id", "title", "created_at", "updated_at", "messages"]) || !string(item.id) || typeof item.title !== "string" || typeof item.created_at !== "string" || typeof item.updated_at !== "string" || !Array.isArray(item.messages)) return null;
+  if (!only(item, ["id", "title", "title_status", "created_at", "updated_at", "messages"]) || !string(item.id) || typeof item.title !== "string" || !["idle", "pending", "success", "error"].includes(item.title_status as string) || typeof item.created_at !== "string" || typeof item.updated_at !== "string" || !Array.isArray(item.messages)) return null;
   const messages = item.messages.map(projectMessage);
   return messages.every(Boolean) ? { ...item, messages } : null;
 }

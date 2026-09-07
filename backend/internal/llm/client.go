@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -53,8 +54,9 @@ func NewClient(baseURL, apiKey string, timeout time.Duration) *Client {
 }
 
 type chatRequest struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
+	Model       string    `json:"model"`
+	Messages    []Message `json:"messages"`
+	Temperature float64   `json:"temperature"`
 }
 
 type chatResponse struct {
@@ -64,16 +66,19 @@ type chatResponse struct {
 }
 
 // ChatMessages sends the supplied messages in order and returns the first answer.
-func (c *Client) ChatMessages(ctx context.Context, model string, messages []Message) (string, error) {
+func (c *Client) ChatMessages(ctx context.Context, model string, messages []Message, temperature float64) (string, error) {
 	if strings.TrimSpace(c.baseURL) == "" || strings.TrimSpace(c.apiKey) == "" || strings.TrimSpace(model) == "" || len(messages) == 0 {
 		return "", &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid completion configuration")}
+	}
+	if math.IsNaN(temperature) || math.IsInf(temperature, 0) || temperature < 0 || temperature > 2 {
+		return "", &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid temperature")}
 	}
 	for _, message := range messages {
 		if (message.Role != "system" && message.Role != "user" && message.Role != "assistant") || strings.TrimSpace(message.Content) == "" {
 			return "", &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid message")}
 		}
 	}
-	body, err := json.Marshal(chatRequest{Model: model, Messages: messages})
+	body, err := json.Marshal(chatRequest{Model: model, Messages: messages, Temperature: temperature})
 	if err != nil {
 		return "", &Error{Kind: ErrorInvalidResponse, err: err}
 	}

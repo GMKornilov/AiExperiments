@@ -8,6 +8,7 @@ export default defineConfig({
     baseURL: process.env.BARISTA_E2E_URL ?? "http://localhost:13000",
     browserName: "chromium",
     channel: "chrome",
+    permissions: ["clipboard-read", "clipboard-write"],
     viewport: { width: 1440, height: 900 },
   },
   reporter: "list",

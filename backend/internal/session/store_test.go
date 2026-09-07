@@ -12,24 +12,32 @@ import (
 )
 
 type fakeProvider struct {
-	mu       sync.Mutex
-	requests [][]llm.Message
-	complete func(context.Context) (string, error)
+	mu          sync.Mutex
+	requests    [][]llm.Message
+	complete    func(context.Context) (string, error)
+	ignoreTitle bool
 }
 
-func (p *fakeProvider) Complete(ctx context.Context, _ agent.Snapshot, messages []llm.Message) (string, error) {
+func (p *fakeProvider) Complete(ctx context.Context, snapshot agent.Snapshot, messages []llm.Message) (string, error) {
+	if p.ignoreTitle && snapshot.Model == "title-model" {
+		return "title", nil
+	}
 	p.mu.Lock()
 	p.requests = append(p.requests, append([]llm.Message(nil), messages...))
 	p.mu.Unlock()
 	return p.complete(ctx)
 }
 
-func testSnapshot() agent.Snapshot {
-	return agent.Snapshot{BaseURL: "https://llm.example", APIKey: "secret", Model: "model", SystemPrompt: "Ты бариста", Timeout: time.Second}
+func testSnapshot() agent.DialogSnapshot {
+	chat := agent.Snapshot{BaseURL: "https://llm.example", APIKey: "secret", Model: "model", SystemPrompt: "Ты бариста", Timeout: time.Second}
+	text := chat
+	text.Model = "title-model"
+	text.SystemPrompt = "Заголовок"
+	return agent.DialogSnapshot{Chat: chat, Text: text}
 }
 
 func TestStoreBuildsHistoryAndDeduplicatesClientID(t *testing.T) {
-	provider := &fakeProvider{complete: func(context.Context) (string, error) { return "answer", nil }}
+	provider := &fakeProvider{ignoreTitle: true, complete: func(context.Context) (string, error) { return "answer", nil }}
 	store := NewStore(provider)
 	dialog, err := store.Create("browser", testSnapshot())
 	if err != nil {
@@ -55,7 +63,12 @@ func TestStoreBuildsHistoryAndDeduplicatesClientID(t *testing.T) {
 	if len(provider.requests) != 2 {
 		t.Fatalf("provider calls = %d, want 2", len(provider.requests))
 	}
-	got := provider.requests[1]
+	var got []llm.Message
+	for _, request := range provider.requests {
+		if len(request) == 4 {
+			got = request
+		}
+	}
 	if len(got) != 4 || got[0].Role != "system" || got[1].Content != "Первый вопрос" || got[2].Role != "assistant" || got[3].Content != "Второй вопрос" {
 		t.Fatalf("unexpected context: %#v", got)
 	}
@@ -63,7 +76,10 @@ func TestStoreBuildsHistoryAndDeduplicatesClientID(t *testing.T) {
 
 func TestStoreRetryKeepsOneUserMessage(t *testing.T) {
 	calls := 0
-	provider := &fakeProvider{complete: func(context.Context) (string, error) {
+	var callsMu sync.Mutex
+	provider := &fakeProvider{ignoreTitle: true, complete: func(context.Context) (string, error) {
+		callsMu.Lock()
+		defer callsMu.Unlock()
 		calls++
 		if calls == 1 {
 			return "", errors.New("offline")

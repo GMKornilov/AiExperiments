@@ -14,12 +14,13 @@
 .chatHeader { display:flex; justify-content:space-between; gap:1rem; padding-bottom:1rem; border-bottom:1px solid var(--color-line); }
 .chatHeader h1,.empty h2,.confirm h2 { margin:0; font-size:clamp(1.25rem,3vw,1.8rem); font-weight:500; overflow-wrap:anywhere; }
 .messages { display:flex; min-height:12rem; flex:1; flex-direction:column; gap:.8rem; padding:1.2rem 0; overflow:auto; }
-.bubble { max-width:min(48rem,90%); padding:.9rem 1rem; border:1px solid var(--color-line); border-radius:14px; overflow:hidden; }
+.bubble { max-width:90%; padding:.9rem 1rem; border:1px solid var(--color-line); border-radius:14px; overflow:hidden; }
 .userBubble { align-self:flex-end; background:rgb(232 166 93 / 13%); }
 .assistantBubble { align-self:flex-start; background:rgb(10 5 3 / 35%); }
 .messageActions { display:flex; justify-content:space-between; gap:1rem; margin-bottom:.55rem; color:var(--color-muted); font:.7rem/1 ui-monospace,SFMono-Regular,monospace; }
 .messageActions button,.iconButton { border:0; color:var(--color-accent-light); background:transparent; }.iconButton { display:inline-grid; place-items:center; min-width:2rem; min-height:2rem; padding:.35rem; border-radius:6px; }.iconButton:hover { background:rgb(248 226 199 / 10%); }
 .status,.blocked { margin:.7rem 0 0; color:var(--color-muted); font-size:.85rem; }
+.titlePending { color:var(--color-muted); }.srOnly { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
 .failed { margin-top:.7rem; color:var(--color-danger); }.failed p { margin:.3rem 0 .7rem; }.failed button { border:1px solid var(--color-danger); border-radius:7px; padding:.4rem .6rem; color:var(--color-ink); background:transparent; }
 .composer { margin-top:auto; padding-top:1rem; border-top:1px solid var(--color-line); }.composer label { display:block; margin-bottom:.5rem; color:var(--color-muted); font:.72rem ui-monospace,SFMono-Regular,monospace; letter-spacing:.08em; text-transform:uppercase; }
 .composer textarea { width:100%; resize:vertical; padding:.8rem; border:1px solid var(--color-line); border-radius:10px; color:var(--color-ink); background:rgb(8 4 3 / 45%); line-height:1.45; }.composer > div { display:flex; justify-content:space-between; align-items:center; margin-top:.55rem; color:var(--color-muted); font-size:.78rem; }

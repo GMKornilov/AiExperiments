@@ -5,6 +5,7 @@ services:
       - ./backend/config.yaml:/app/config.yaml:ro
       - ./backend/llm.yaml:/app/llm.yaml:ro
       - ./backend/prompts/barista-system.txt:/app/prompts/barista-system.txt:ro
+      - ./backend/prompts/chat-title-system.txt:/app/prompts/chat-title-system.txt:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/healthz"]
       interval: 10s
@@ -24,7 +25,7 @@ services:
       barista-api:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:3000"]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000"]
       interval: 10s
       timeout: 3s
       retries: 5

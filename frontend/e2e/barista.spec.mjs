@@ -18,8 +18,14 @@ async function sendAndSettle(page, text) {
 
 test("empty, create, send, copy, long overflow and refresh", async ({ page }) => {
   await page.goto("/");
+  expect(await page.locator("main").first().evaluate((node) => node.getBoundingClientRect().width)).toBeGreaterThan(1_300);
   await expect(page.getByText("Чашка ждёт вопроса")).toBeVisible();
   await createDialog(page);
+  const copyID = page.getByRole("button", { name: "Копировать ID чата" });
+  await expect(copyID).toBeVisible();
+  const id = await page.locator("main").getByText(/^ID:/).first().textContent();
+  await copyID.click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe((id ?? "").replace("ID: ", "").trim());
   const question = `${unique("overflow")} ${"длинный-текст ".repeat(250)}`;
   await sendAndSettle(page, question);
   await expect(page.getByRole("button", { name: "Копировать сообщение" }).first()).toBeVisible();
@@ -38,6 +44,21 @@ test("error is retried once without a second user bubble", async ({ page }) => {
   await page.getByRole("button", { name: "Повторить отправку" }).click();
   await expect(page.getByText("Бариста готовит ответ…")).toHaveCount(0, { timeout: 15_000 });
   await expect(page.getByRole("region", { name: "Переписка" }).getByText(question, { exact: true })).toHaveCount(1);
+});
+
+test("pending title polls independently while composer stays enabled", async ({ page }) => {
+  await createDialog(page);
+  const question = unique("title-slow");
+  await page.getByLabel("Ваш вопрос").fill(question);
+  await page.getByRole("button", { name: "Отправить" }).click();
+  await expect(page.getByRole("region", { name: "Переписка" }).getByText(question, { exact: true })).toBeVisible();
+  await expect(page.getByText("Бариста готовит ответ…")).toHaveCount(0, { timeout: 10_000 });
+  await expect(page.getByText("Обновляем название…")).toBeVisible();
+  await expect(page.getByLabel("Ваш вопрос")).toBeEnabled();
+  const title = page.getByRole("region", { name: "Переписка" }).locator("xpath=preceding-sibling::header//h1");
+  await expect(title).toHaveText("Название диалога", { timeout: 10_000 });
+  await expect(page.getByText("Обновляем название…")).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Переписка" }).locator("article")).toHaveCount(2);
 });
 
 test("two browser sessions are isolated and admin polling does not append rows", async ({ browser }) => {

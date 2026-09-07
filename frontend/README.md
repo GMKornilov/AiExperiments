@@ -3,7 +3,9 @@
 Next.js App Router приложение. Браузер вызывает только same-origin `/api/*`.
 Route Handlers выдают HttpOnly `SameSite=Lax` cookie и передают его значение
 backend только в `X-Session-ID`; приватный `BARISTA_BACKEND_URL` доступен лишь
-серверному коду.
+серверному коду. Диалог показывает fallback-название до завершения отдельного
+фонового запроса заголовка; API отдаёт `title_status` (`idle`, `pending`,
+`success` или `error`).
 
 ```sh
 cp .env.example .env.local

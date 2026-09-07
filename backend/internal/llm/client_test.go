@@ -29,7 +29,7 @@ func TestChatMessagesSerializesOrderedContext(t *testing.T) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"answer"}}]}`))
 	}))
 	defer server.Close()
-	answer, err := NewClient(server.URL, "key", time.Second).ChatMessages(context.Background(), "test", []Message{{Role: "system", Content: "system"}, {Role: "user", Content: "first"}, {Role: "user", Content: "next"}})
+	answer, err := NewClient(server.URL, "key", time.Second).ChatMessages(context.Background(), "test", []Message{{Role: "system", Content: "system"}, {Role: "user", Content: "first"}, {Role: "user", Content: "next"}}, 0)
 	if err != nil || answer != "answer" {
 		t.Fatalf("ChatMessages() = %q, %v", answer, err)
 	}
@@ -54,7 +54,7 @@ func TestChatMessagesClassifiesInvalidAndProviderResponses(t *testing.T) {
 				_, _ = w.Write([]byte(test.body))
 			}))
 			defer server.Close()
-			_, err := NewClient(server.URL, "key", time.Second).ChatMessages(context.Background(), "test", []Message{{Role: "user", Content: "coffee"}})
+			_, err := NewClient(server.URL, "key", time.Second).ChatMessages(context.Background(), "test", []Message{{Role: "user", Content: "coffee"}}, 1)
 			var got *Error
 			if !errors.As(err, &got) || got.Kind != test.want {
 				t.Fatalf("error = %#v", err)
@@ -74,7 +74,7 @@ func TestChatMessagesTimeoutCallsProviderOnce(t *testing.T) {
 		<-r.Context().Done()
 	}))
 	defer server.Close()
-	_, err := NewClient(server.URL, "key", 20*time.Millisecond).ChatMessages(context.Background(), "test", []Message{{Role: "user", Content: "coffee"}})
+	_, err := NewClient(server.URL, "key", 20*time.Millisecond).ChatMessages(context.Background(), "test", []Message{{Role: "user", Content: "coffee"}}, 1)
 	var got *Error
 	if !errors.As(err, &got) || got.Kind != ErrorTimeout || calls.Load() != 1 {
 		t.Fatalf("error=%v calls=%d", err, calls.Load())
