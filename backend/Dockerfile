@@ -10,6 +10,7 @@ FROM alpine:3.21
 
 RUN addgroup -S app && adduser -S -G app app
 WORKDIR /app
+RUN mkdir -p /app/data && chown app:app /app/data && chmod 700 /app/data
 COPY --from=build /out/api-server /usr/local/bin/api-server
 COPY --chown=app:app prompts ./prompts
 

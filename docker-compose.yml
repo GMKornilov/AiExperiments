@@ -2,6 +2,7 @@ services:
   barista-api:
     build: ./backend
     volumes:
+      - barista-history:/app/data
       - ./backend/config.yaml:/app/config.yaml:ro
       - ./backend/llm.yaml:/app/llm.yaml:ro
       - ./backend/prompts/barista-system.txt:/app/prompts/barista-system.txt:ro
@@ -11,6 +12,7 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+
   barista-web:
     build:
       context: ./frontend
@@ -29,3 +31,6 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+
+volumes:
+  barista-history:

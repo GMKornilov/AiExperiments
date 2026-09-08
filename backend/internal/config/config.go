@@ -20,6 +20,7 @@ type BackendConfig struct {
 	Addr            string `yaml:"addr"`
 	LLMConfigPath   string `yaml:"llm_config_path"`
 	LogTextPayloads bool   `yaml:"log_text_payloads"`
+	HistoryPath     string `yaml:"history_path"`
 }
 
 type LLMConfig struct {
@@ -53,6 +54,12 @@ func LoadBackend(path string) (BackendConfig, error) {
 	}
 	if !filepath.IsAbs(cfg.LLMConfigPath) {
 		cfg.LLMConfigPath = filepath.Join(filepath.Dir(path), cfg.LLMConfigPath)
+	}
+	if strings.TrimSpace(cfg.HistoryPath) == "" {
+		cfg.HistoryPath = "data/history.json"
+	}
+	if !filepath.IsAbs(cfg.HistoryPath) {
+		cfg.HistoryPath = filepath.Join(filepath.Dir(path), cfg.HistoryPath)
 	}
 	return cfg, nil
 }

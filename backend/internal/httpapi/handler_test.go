@@ -24,9 +24,9 @@ func (s *fakeStore) Get(_ string, id string) (session.Dialog, bool) {
 	d, ok := s.dialogs[id]
 	return d, ok
 }
-func (s *fakeStore) Exists(id string) bool      { _, ok := s.dialogs[id]; return ok }
-func (s *fakeStore) Select(string, string) bool { return false }
-func (s *fakeStore) Delete(string, string) bool { return false }
+func (s *fakeStore) Exists(id string) bool               { _, ok := s.dialogs[id]; return ok }
+func (s *fakeStore) Select(string, string) (bool, error) { return false, nil }
+func (s *fakeStore) Delete(string, string) (bool, error) { return false, nil }
 func (s *fakeStore) Send(context.Context, string, string, string, string) (session.Dialog, error) {
 	return session.Dialog{}, nil
 }

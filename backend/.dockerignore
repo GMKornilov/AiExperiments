@@ -3,6 +3,7 @@ bin
 tmp
 config.yaml
 llm.yaml
+data
 .env
 .env.*
 !.env.example

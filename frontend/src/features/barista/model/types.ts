@@ -1,6 +1,6 @@
 export type MessageRole = "user" | "assistant";
 export type MessageStatus = "pending" | "success" | "error";
-export type ErrorCategory = "config" | "validation" | "network" | "timeout" | "provider" | "invalid_response" | "not_found" | "busy";
+export type ErrorCategory = "config" | "validation" | "network" | "timeout" | "provider" | "invalid_response" | "not_found" | "busy" | "cancelled" | "storage";
 
 export type BaristaMessage = {
   id: string;

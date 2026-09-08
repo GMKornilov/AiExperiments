@@ -38,7 +38,11 @@ func main() {
 	}
 	logConfig(logger, requestID, "success", time.Since(started), "")
 	journal := observability.NewJournal(cfg.LogTextPayloads, nil)
-	store := session.NewStore(agent.OpenAIProvider{})
+	store, err := session.OpenStore(agent.OpenAIProvider{}, cfg.HistoryPath, httpapi.SnapshotLoader(cfg.LLMConfigPath))
+	if err != nil {
+		logger.Error("barista.server", "source", "backend", "event", "server", "result", "failure", "correlation_id", requestID, "error_category", "storage")
+		os.Exit(1)
+	}
 	defer store.Close()
 	server := &http.Server{Addr: cfg.Addr, Handler: httpapi.New(store, httpapi.SnapshotLoader(cfg.LLMConfigPath), journal)}
 	if err := serve(server, store.Close); err != nil {

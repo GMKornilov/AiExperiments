@@ -6,6 +6,34 @@ import (
 	"testing"
 )
 
+func TestHistoryPathResolvesRelativeToBackendConfig(t *testing.T) {
+	dir := t.TempDir()
+	for _, configured := range []string{"", "saved/dialogs.json", filepath.Join(dir, "absolute.json")} {
+		body := "addr: ':8080'\nllm_config_path: llm.yaml\n"
+		if configured != "" {
+			body += "history_path: '" + configured + "'\n"
+		}
+		path := filepath.Join(dir, "config.yaml")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadBackend(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := configured
+		if want == "" {
+			want = "data/history.json"
+		}
+		if !filepath.IsAbs(want) {
+			want = filepath.Join(dir, want)
+		}
+		if cfg.HistoryPath != want {
+			t.Fatalf("history path = %q, want %q", cfg.HistoryPath, want)
+		}
+	}
+}
+
 func TestLoadLLMValidationAndRelativePrompt(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("system"), 0o600); err != nil {

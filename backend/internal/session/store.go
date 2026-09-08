@@ -1,4 +1,4 @@
-// Package session provides an in-memory, browser-session-scoped dialog store.
+// Package session provides a browser-session-scoped dialog store with JSON persistence.
 package session
 
 import (
@@ -47,15 +47,20 @@ type browserSession struct {
 	pendingDialogID string
 }
 
-// Store keeps all sessions solely in process memory.
+// Store serializes session mutations and optionally persists them to JSON.
 type Store struct {
-	mu       sync.Mutex
-	sessions map[string]*browserSession
-	provider agent.Provider
-	now      func() time.Time
-	observer AttemptObserver
-	titleWG  sync.WaitGroup
-	closed   bool
+	mu               sync.Mutex
+	sessions         map[string]*browserSession
+	provider         agent.Provider
+	now              func() time.Time
+	observer         AttemptObserver
+	titleWG          sync.WaitGroup
+	attemptWG        sync.WaitGroup
+	closed           bool
+	path             string
+	storageErr       error
+	persistedDialogs map[string][]byte
+	persistedIndex   []byte
 }
 
 // AttemptObserver observes actual provider calls after acceptance.
@@ -97,7 +102,7 @@ func (s *Store) Close() {
 	}
 	s.mu.Unlock()
 	done := make(chan struct{})
-	go func() { s.titleWG.Wait(); close(done) }()
+	go func() { s.titleWG.Wait(); s.attemptWG.Wait(); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
@@ -127,9 +132,15 @@ func (s *Store) Create(sessionID string, snapshot agent.DialogSnapshot) (Dialog,
 	if s.closed {
 		return Dialog{}, fmt.Errorf("хранилище закрыто")
 	}
+	if s.storageErr != nil {
+		return Dialog{}, s.storageErr
+	}
 	session := s.getOrCreateLocked(sessionID)
 	session.dialogs[id] = &storedDialog{dialog: dialog, agent: conversation, textSnapshot: snapshot.Text}
 	session.selected = id
+	if err := s.saveLocked(context.Background()); err != nil {
+		return Dialog{}, err
+	}
 	return cloneDialog(dialog), nil
 }
 
@@ -177,24 +188,30 @@ func (s *Store) Exists(dialogID string) bool {
 }
 
 // Select changes the browser session's selected dialog.
-func (s *Store) Select(sessionID, dialogID string) bool {
+func (s *Store) Select(sessionID, dialogID string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.storageErr != nil {
+		return false, s.storageErr
+	}
 	session := s.sessions[sessionID]
 	if session == nil || session.dialogs[dialogID] == nil {
-		return false
+		return false, nil
 	}
 	session.selected = dialogID
-	return true
+	return true, s.saveLocked(context.Background())
 }
 
 // Delete cancels a pending attempt, if any, and irreversibly removes its dialog.
-func (s *Store) Delete(sessionID, dialogID string) bool {
+func (s *Store) Delete(sessionID, dialogID string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.storageErr != nil {
+		return false, s.storageErr
+	}
 	session := s.sessions[sessionID]
 	if session == nil || session.dialogs[dialogID] == nil {
-		return false
+		return false, nil
 	}
 	stored := session.dialogs[dialogID]
 	if stored.titleCancel != nil {
@@ -211,12 +228,16 @@ func (s *Store) Delete(sessionID, dialogID string) bool {
 		session.cancel = nil
 		session.pendingDialogID = ""
 	}
-	return true
+	return true, s.saveLocked(context.Background())
 }
 
 // Send accepts a deduplicated client message and completes one agent attempt.
 func (s *Store) Send(ctx context.Context, sessionID, dialogID, clientID, text string) (Dialog, error) {
 	s.mu.Lock()
+	if s.storageErr != nil {
+		s.mu.Unlock()
+		return Dialog{}, s.storageErr
+	}
 	if s.closed {
 		s.mu.Unlock()
 		return Dialog{}, fmt.Errorf("хранилище закрыто")
@@ -245,9 +266,16 @@ func (s *Store) Send(ctx context.Context, sessionID, dialogID, clientID, text st
 		s.mu.Unlock()
 		return Dialog{}, err
 	}
-	if len(stored.agent.Messages()) == 1 && stored.dialog.TitleStatus == "idle" {
+	startTitle := len(stored.agent.Messages()) == 1 && stored.dialog.TitleStatus == "idle"
+	if startTitle {
 		stored.dialog.Title = titleFrom(text)
 		stored.dialog.TitleStatus = "pending"
+	}
+	if err := s.saveLocked(ctx); err != nil {
+		s.mu.Unlock()
+		return Dialog{}, err
+	}
+	if startTitle {
 		titleContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), stored.textSnapshot.Timeout)
 		stored.titleCancel = cancel
 		observer := s.observer
@@ -287,6 +315,9 @@ func (s *Store) runTitle(ctx context.Context, cancel context.CancelFunc, session
 		stored.dialog.TitleStatus = "success"
 	}
 	dialog := s.dialogCopyLocked(stored)
+	if saveErr := s.saveLocked(ctx); saveErr != nil {
+		err = saveErr
+	}
 	s.mu.Unlock()
 	if errors.Is(ctx.Err(), context.Canceled) {
 		if observer.TitleCancelled != nil {
@@ -324,6 +355,10 @@ func normalizeTitle(answer, fallback string) string {
 // Retry reruns an errored user message without adding another user message.
 func (s *Store) Retry(ctx context.Context, sessionID, dialogID, messageID string) (Dialog, error) {
 	s.mu.Lock()
+	if s.storageErr != nil || s.closed {
+		s.mu.Unlock()
+		return Dialog{}, ErrStorage
+	}
 	stored := s.dialogLocked(sessionID, dialogID)
 	session := s.sessions[sessionID]
 	if stored == nil || session == nil {
@@ -340,10 +375,16 @@ func (s *Store) Retry(ctx context.Context, sessionID, dialogID, messageID string
 		s.mu.Unlock()
 		return Dialog{}, err
 	}
+	if err := s.saveLocked(ctx); err != nil {
+		s.mu.Unlock()
+		return Dialog{}, err
+	}
 	return s.runAttempt(ctx, sessionID, dialogID, stored, session, message.ID)
 }
 
 func (s *Store) runAttempt(ctx context.Context, sessionID, dialogID string, stored *storedDialog, session *browserSession, messageID string) (Dialog, error) {
+	s.attemptWG.Add(1)
+	defer s.attemptWG.Done()
 	// Keep correlation values, but detach the accepted work from request cancellation.
 	attemptContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), stored.agent.Snapshot().Timeout)
 	session.pending = true
@@ -373,11 +414,12 @@ func (s *Store) runAttempt(ctx context.Context, sessionID, dialogID string, stor
 	stored.dialog.Messages = stored.agent.Messages()
 	dialog := s.dialogCopyLocked(stored)
 	observer = s.observer
+	saveErr := s.saveLocked(ctx)
 	s.mu.Unlock()
 	if observer.Finished != nil {
 		observer.Finished(attemptContext, dialogID, messageID, time.Since(startedAt), dialog)
 	}
-	return dialog, nil
+	return dialog, saveErr
 }
 
 func (s *Store) dialogLocked(sessionID, dialogID string) *storedDialog {

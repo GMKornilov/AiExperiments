@@ -5,7 +5,7 @@ const maxTextRunes = 4_000;
 const timeoutMilliseconds = 35_000;
 const bodyTimeoutMilliseconds = 10_000;
 const sessionCookie = "barista_session";
-const errorCategories = new Set(["config", "validation", "network", "timeout", "provider", "invalid_response", "not_found", "busy"]);
+const errorCategories = new Set(["config", "validation", "network", "timeout", "provider", "invalid_response", "not_found", "busy", "cancelled", "storage"]);
 const eventNames = new Set(["dialog_created", "dialog_selected", "dialog_deleted", "dialog_id_copied", "message_sent", "message_retried", "message_copied", "dialog_validation_failed", "message_failed", "admin_lookup", "admin_refresh", "bff_request_completed", "bff_request_failed"]);
 
 type JSONRecord = Record<string, unknown>;
@@ -44,7 +44,7 @@ function empty(status: number, requestID: string, setCookie?: string): Response 
 
 function error(category: string, requestID: string, status = 400, setCookie?: string): Response {
   const safe = errorCategories.has(category) ? category : "provider";
-  const messages: Record<string, string> = { validation: "Некорректный запрос.", not_found: "Данные не найдены.", busy: "Запрос уже выполняется.", config: "Сервис временно недоступен." };
+  const messages: Record<string, string> = { validation: "Некорректный запрос.", not_found: "Данные не найдены.", busy: "Запрос уже выполняется.", config: "Сервис временно недоступен.", storage: "Хранилище истории временно недоступно." };
   return response({ error: { category: safe, message: messages[safe] ?? "Не удалось получить ответ. Повторите отправку." } }, status, requestID, setCookie);
 }
 

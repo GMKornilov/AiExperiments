@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -47,18 +48,18 @@ const (
 
 // Snapshot is the immutable LLM setup captured when a dialog is created.
 type Snapshot struct {
-	BaseURL      string
-	APIKey       string
-	Model        string
-	SystemPrompt string
-	Timeout      time.Duration
-	Temperature  float64
+	BaseURL      string        `json:"base_url"`
+	APIKey       string        `json:"-"`
+	Model        string        `json:"model"`
+	SystemPrompt string        `json:"system_prompt"`
+	Timeout      time.Duration `json:"timeout"`
+	Temperature  float64       `json:"temperature"`
 }
 
 // DialogSnapshot captures immutable configurations for chat and title generation.
 type DialogSnapshot struct {
-	Chat Snapshot
-	Text Snapshot
+	Chat Snapshot `json:"chat"`
+	Text Snapshot `json:"text"`
 }
 
 func (s DialogSnapshot) Validate() error {
@@ -124,6 +125,40 @@ func NewConversation(snapshot Snapshot) (*Conversation, error) {
 		return nil, err
 	}
 	return &Conversation{snapshot: snapshot}, nil
+}
+
+// RestoreConversation validates saved history and makes interrupted work retryable.
+func RestoreConversation(snapshot Snapshot, messages []Message) (*Conversation, error) {
+	c, err := NewConversation(snapshot)
+	if err != nil {
+		return nil, err
+	}
+	c.messages = append([]Message(nil), messages...)
+	clients := make(map[string]bool)
+	for i := range c.messages {
+		m := &c.messages[i]
+		id, err := strconv.ParseUint(strings.TrimPrefix(m.ID, "m-"), 10, 64)
+		if err != nil || m.ID != fmt.Sprintf("m-%d", id) || id != uint64(i+1) || strings.TrimSpace(m.Text) == "" || m.CreatedAt.IsZero() {
+			return nil, fmt.Errorf("некорректная история сообщений")
+		}
+		if i%2 == 0 {
+			if m.Role != "user" || m.ClientID == "" || clients[m.ClientID] {
+				return nil, fmt.Errorf("некорректная user-реплика")
+			}
+			clients[m.ClientID] = true
+			if m.Status == StatusPending {
+				m.Status = StatusError
+				m.ErrorCategory = "cancelled"
+			}
+			if (m.Status == StatusError && i != len(messages)-1) || (m.Status == StatusSuccess && i+1 >= len(messages)) || (m.Status != StatusError && m.Status != StatusSuccess) {
+				return nil, fmt.Errorf("некорректный статус user-реплики")
+			}
+		} else if m.Role != "assistant" || m.Status != StatusSuccess || m.ClientID != "" {
+			return nil, fmt.Errorf("некорректная assistant-реплика")
+		}
+		c.nextID = id
+	}
+	return c, nil
 }
 
 // Snapshot returns the dialog's immutable setup.
