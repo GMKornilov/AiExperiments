@@ -6,6 +6,24 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(
 const dialog = { id: "d", title: "Новый диалог", title_status: "idle", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", messages: [] };
 
 describe("barista BFF", () => {
+  it("restores an interrupted message using the existing browser cookie", async () => {
+    const saved = { ...dialog, title_status: "error", messages: [{ id: "m-1", client_message_id: "c1", role: "user", text: "Кофе", status: "error", error_category: "cancelled", created_at: dialog.created_at }] };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ dialogs: [saved], selected_dialog_id: "d" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await listDialogs(new Request("http://web/api/dialogs", { headers: { cookie: "barista_session=12345678-1234-1234-1234-123456789abc" } }));
+    expect(result.status).toBe(200);
+    expect(await result.json()).toEqual({ dialogs: [saved], selected_dialog_id: "d" });
+    expect(result.headers.get("set-cookie")).toBeNull();
+    expect(fetchMock.mock.calls[0][1].headers["X-Session-ID"]).toBe("12345678-1234-1234-1234-123456789abc");
+  });
+
+  it("returns a safe storage error without backend details", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: { category: "storage", message: "private path and credential" } }, { status: 503 })));
+    const result = await listDialogs(new Request("http://web/api/dialogs"));
+    expect(result.status).toBe(502);
+    expect(await result.json()).toEqual({ error: { category: "storage", message: "Хранилище истории временно недоступно." } });
+  });
+
   it("creates a HttpOnly session cookie and forwards only its ID", async () => {
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ dialogs: [], selected_dialog_id: "" }));
     vi.stubGlobal("fetch", fetchMock);

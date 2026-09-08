@@ -130,7 +130,7 @@ func TestDeletePendingDialogReleasesSessionLockAndIgnoresLateAnswer(t *testing.T
 		done <- err
 	}()
 	<-started
-	if !store.Delete("browser", first.ID) {
+	if deleted, err := store.Delete("browser", first.ID); !deleted || err != nil {
 		t.Fatal("Delete() = false")
 	}
 	if _, err := store.Send(context.Background(), "browser", second.ID, "c2", "новый запрос"); err != nil {

@@ -2,3 +2,5 @@
 addr: ":8080"
 llm_config_path: "llm.yaml"
 log_text_payloads: false
+# Session index; each chat is stored in data/history/<dialog-id>.json.
+history_path: "data/history.json"

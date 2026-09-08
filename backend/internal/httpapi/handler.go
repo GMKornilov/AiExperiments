@@ -24,8 +24,8 @@ type Store interface {
 	List(string) session.Listing
 	Get(string, string) (session.Dialog, bool)
 	Exists(string) bool
-	Select(string, string) bool
-	Delete(string, string) bool
+	Select(string, string) (bool, error)
+	Delete(string, string) (bool, error)
 	Send(context.Context, string, string, string, string) (session.Dialog, error)
 	Retry(context.Context, string, string, string) (session.Dialog, error)
 }
@@ -53,6 +53,9 @@ func (w *statusWriter) Write(data []byte) (int, error) {
 
 func New(store Store, loadSnapshot func() (agent.DialogSnapshot, error), journal *observability.Journal) http.Handler {
 	h := &Handler{store: store, loadSnapshot: loadSnapshot, journal: journal}
+	if restored, ok := store.(interface{ RegisterSecrets(func(string, ...string)) }); ok {
+		restored.RegisterSecrets(journal.SetSecrets)
+	}
 	if observed, ok := store.(interface{ SetAttemptObserver(session.AttemptObserver) }); ok {
 		observed.SetAttemptObserver(session.AttemptObserver{
 			Started: func(ctx context.Context, dialogID, messageID string) {
@@ -114,6 +117,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				category = "not_found"
 			case http.StatusConflict:
 				category = "busy"
+			case http.StatusServiceUnavailable:
+				category = "config"
+				if durable, ok := h.store.(interface{ StorageError() error }); ok && durable.StorageError() != nil {
+					category = "storage"
+				}
 			default:
 				category = "provider"
 			}
@@ -125,6 +133,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(ctx)
 	w.Header().Set("X-Request-ID", llm.RequestID(ctx))
 	w.Header().Set("Cache-Control", "no-store")
+	if durable, ok := h.store.(interface{ StorageError() error }); ok && durable.StorageError() != nil {
+		h.fail(w, http.StatusServiceUnavailable, "storage")
+		return
+	}
 	if r.URL.Path == "/healthz" {
 		if r.Method != http.MethodGet {
 			method(w, http.MethodGet)
@@ -196,6 +208,10 @@ func (h *Handler) dialogs(w http.ResponseWriter, r *http.Request, sid string) {
 		}
 		d, err := h.store.Create(sid, snap)
 		if err != nil {
+			if errors.Is(err, session.ErrStorage) {
+				h.fail(w, http.StatusServiceUnavailable, "storage")
+				return
+			}
 			h.fail(w, http.StatusServiceUnavailable, "config")
 			return
 		}
@@ -217,7 +233,12 @@ func (h *Handler) dialog(w http.ResponseWriter, r *http.Request, sid, id string)
 		}
 		h.ok(w, dialogDTO(d))
 	case http.MethodDelete:
-		if !h.store.Delete(sid, id) {
+		deleted, err := h.store.Delete(sid, id)
+		if err != nil {
+			h.fail(w, http.StatusServiceUnavailable, "storage")
+			return
+		}
+		if !deleted {
 			h.fail(w, 404, "not_found")
 			return
 		}
@@ -234,7 +255,12 @@ func (h *Handler) selectDialog(w http.ResponseWriter, r *http.Request, sid, id s
 		method(w, http.MethodPost)
 		return
 	}
-	if !h.store.Select(sid, id) {
+	selected, err := h.store.Select(sid, id)
+	if err != nil {
+		h.fail(w, http.StatusServiceUnavailable, "storage")
+		return
+	}
+	if !selected {
 		h.fail(w, 404, "not_found")
 		return
 	}
@@ -286,6 +312,8 @@ func (h *Handler) retry(w http.ResponseWriter, r *http.Request, sid, id, mid str
 func (h *Handler) sendError(w http.ResponseWriter, err error) {
 	text := err.Error()
 	switch {
+	case errors.Is(err, session.ErrStorage):
+		h.fail(w, http.StatusServiceUnavailable, "storage")
 	case strings.Contains(text, "не найден"):
 		h.fail(w, 404, "not_found")
 	case strings.Contains(text, "уже выполняется"):
@@ -335,7 +363,7 @@ func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, 400, "validation")
 		return
 	}
-	if p.ErrorCategory != "" && !map[string]bool{"validation": true, "network": true, "timeout": true, "provider": true, "invalid_response": true}[p.ErrorCategory] {
+	if p.ErrorCategory != "" && !map[string]bool{"validation": true, "network": true, "timeout": true, "provider": true, "invalid_response": true, "cancelled": true, "storage": true}[p.ErrorCategory] {
 		h.fail(w, 400, "validation")
 		return
 	}
@@ -399,7 +427,7 @@ func (h *Handler) fail(w http.ResponseWriter, status int, category string) {
 	if category == "busy" {
 		msg = "Запрос уже выполняется."
 	}
-	if category == "config" {
+	if category == "config" || category == "storage" {
 		msg = "Сервис временно недоступен."
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
