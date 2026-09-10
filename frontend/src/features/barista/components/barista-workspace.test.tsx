@@ -2,12 +2,59 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BaristaWorkspace } from "./barista-workspace";
 
-const dialog = (messages: unknown[] = [], title_status: "idle" | "pending" | "success" | "error" = "idle") => ({ id: "dialog-123", title: "Новый диалог", title_status, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", messages });
+const dialog = (messages: unknown[] = [], title_status: "idle" | "pending" | "success" | "error" = "idle") => ({ id: "dialog-123", title: "Новый диалог", title_status, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", messages, accounted_tokens: 0 });
 const json = (body: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } }));
 
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("BaristaWorkspace", () => {
+  it("shows saved per-answer usage, confirmed zero and the backend total after reopening", async () => {
+    const saved = { ...dialog([
+      { id: "a1", role: "assistant", text: "Первый ответ", status: "success", created_at: "2026-01-01T00:00:00Z", usage: { prompt_tokens: 100, completion_tokens: 20 } },
+      { id: "a2", role: "assistant", text: "Без статистики", status: "success", created_at: "2026-01-01T00:00:01Z" },
+      { id: "a3", role: "assistant", text: "Нулевой расход", status: "success", created_at: "2026-01-01T00:00:02Z", usage: { prompt_tokens: 0, completion_tokens: 0 } },
+    ]), accounted_tokens: 150 };
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => json({ dialogs: [saved], selected_dialog_id: saved.id })));
+    const first = render(<BaristaWorkspace />);
+    expect(await screen.findByText("Вход: 100 токенов · Выход: 20 токенов")).toBeVisible();
+    expect(screen.getByText("Вход: 0 токенов · Выход: 0 токенов")).toBeVisible();
+    expect(screen.getByText("Токены: нет данных")).toBeVisible();
+    expect(screen.getByText("Учтено токенов: 150")).toBeVisible();
+    first.unmount();
+    render(<BaristaWorkspace />);
+    expect(await screen.findByText("Учтено токенов: 150")).toBeVisible();
+  });
+
+  it("refreshes confirmed spending after a failed attempt without retrying automatically", async () => {
+    const failed = { id: "m1", client_message_id: "c1", role: "user", text: "Кофе?", status: "error", error_category: "invalid_response", created_at: "2026-01-01T00:00:00Z" };
+    const fetchMock = vi.fn().mockImplementation((url: string, options?: RequestInit) => {
+      if (url === "/api/events") return json({});
+      if (url === "/api/dialogs") return json({ dialogs: [dialog()], selected_dialog_id: "dialog-123" });
+      if (options?.method === "POST") {
+        failed.client_message_id = JSON.parse(options.body as string).client_message_id;
+        return json({ error: { category: "invalid_response", message: "Ошибка" } }, 502);
+      }
+      return json({ ...dialog([failed]), accounted_tokens: 120 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<BaristaWorkspace />);
+    fireEvent.change(await screen.findByLabelText("Ваш вопрос"), { target: { value: "Кофе?" } });
+    fireEvent.click(screen.getByRole("button", { name: "Отправить" }));
+    expect(await screen.findByText("Учтено токенов: 120")).toBeVisible();
+    expect(screen.getAllByText("Кофе?")).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/messages"))).toHaveLength(1);
+  });
+
+  it("shows the persisted context-limit error after refresh", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => json({ dialogs: [dialog([{ id: "u1", role: "user", text: "Кофе?", status: "error", error_category: "context_limit", created_at: "2026-01-01T00:00:00Z" }])], selected_dialog_id: "dialog-123" })));
+    render(<BaristaWorkspace />);
+    expect(await screen.findByText("Контекст диалога превышает лимит модели. Начните новый диалог.")).toBeVisible();
+    expect(screen.getByLabelText("Ваш вопрос")).toBeDisabled();
+    expect(screen.getByText("Учтено токенов: 0")).toBeVisible();
+    expect(screen.getByText("Начните новый диалог: повторная отправка сохранит тот же контекст.")).toBeVisible();
+    expect(screen.queryByText("Повторите ошибочную отправку, чтобы продолжить диалог.")).not.toBeInTheDocument();
+  });
+
   it("не повторяет отправку, если сверка уже получила успешный ответ", async () => {
     const failed = { id: "m1", client_message_id: "c1", role: "user", text: "Кофе?", status: "error", created_at: "2026-01-01T00:00:00Z" };
     const answer = { id: "a1", role: "assistant", text: "Ответ", status: "success", created_at: "2026-01-01T00:00:01Z" };
@@ -78,13 +125,13 @@ describe("BaristaWorkspace", () => {
     resolveSend(new Response(JSON.stringify(dialog()), { headers: { "Content-Type": "application/json" } }));
   });
 
-  it("считает лимит ввода Unicode code points", async () => {
+  it("отправляет текст длиннее прежнего лимита в 4000 символов", async () => {
     const request = vi.fn()
       .mockImplementationOnce(() => json({ dialogs: [dialog()], selected_dialog_id: "dialog-123" }))
       .mockImplementationOnce(() => json(dialog()));
     vi.stubGlobal("fetch", request);
     render(<BaristaWorkspace />);
-    const value = "😀".repeat(4000);
+    const value = "😀".repeat(5000);
     fireEvent.change(await screen.findByLabelText("Ваш вопрос"), { target: { value } });
     fireEvent.click(screen.getByRole("button", { name: "Отправить" }));
     await waitFor(() => expect(request).toHaveBeenCalledTimes(2));

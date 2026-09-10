@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { CollapsibleMessage } from "@/features/barista/components/collapsible-message";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { baristaClient } from "@/features/barista/lib/chat-client";
 import type { AdminLogsResponse } from "@/features/barista/model/types";
@@ -39,6 +40,6 @@ export function AdminWorkspace() {
     </form>
     {error && <p role="alert" className={styles.error}>{error}</p>}
     {data && !data.found && <p className={styles.notFound}>Данные не найдены.</p>}
-    {data?.found && <><p className={styles.indicator}>Текстовые payloads: {data.log_text_payloads ? "включены" : "выключены"}</p>{(["frontend", "backend"] as const).map((source) => <section className={styles.group} key={source}><h2>{source === "frontend" ? "Frontend / BFF" : "Backend"}</h2>{groups[source]?.length ? <ol>{groups[source].map((log, index) => <li key={`${log.correlation_id}-${index}`}><time>{new Date(log.timestamp).toLocaleString("ru-RU")}</time><span>{log.event}</span><span>{log.result}</span><span>request: {log.correlation_id}</span>{log.error_category && <span>{log.error_category}</span>}{log.duration_ms !== undefined && <span>{log.duration_ms} мс</span>}{log.text && <span>{log.text}</span>}</li>)}</ol> : <p>Записей нет.</p>}</section>)}</>}
+    {data?.found && <><p className={styles.indicator}>Текстовые payloads: {data.log_text_payloads ? "включены" : "выключены"}</p>{(["frontend", "backend"] as const).map((source) => <section className={styles.group} key={source}><h2>{source === "frontend" ? "Frontend / BFF" : "Backend"}</h2>{groups[source]?.length ? <ol>{groups[source].map((log, index) => <li key={`${log.correlation_id}-${index}`}><time>{new Date(log.timestamp).toLocaleString("ru-RU")}</time><span>{log.event}</span><span>{log.result}</span><span>request: {log.correlation_id}</span>{log.error_category && <span>{log.error_category}</span>}{log.duration_ms !== undefined && <span>{log.duration_ms} мс</span>}{log.text && <CollapsibleMessage text={log.text} />}</li>)}</ol> : <p>Записей нет.</p>}</section>)}</>}
   </main>;
 }

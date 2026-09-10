@@ -1,11 +1,10 @@
 import "server-only";
 
-const maxBodyBytes = 64 * 1024;
-const maxTextRunes = 4_000;
+const maxBodyBytes = 32 * 1024 * 1024;
 const timeoutMilliseconds = 35_000;
 const bodyTimeoutMilliseconds = 10_000;
 const sessionCookie = "barista_session";
-const errorCategories = new Set(["config", "validation", "network", "timeout", "provider", "invalid_response", "not_found", "busy", "cancelled", "storage"]);
+const errorCategories = new Set(["config", "validation", "network", "timeout", "provider", "invalid_response", "not_found", "busy", "cancelled", "storage", "context_limit"]);
 const eventNames = new Set(["dialog_created", "dialog_selected", "dialog_deleted", "dialog_id_copied", "message_sent", "message_retried", "message_copied", "dialog_validation_failed", "message_failed", "admin_lookup", "admin_refresh", "bff_request_completed", "bff_request_failed"]);
 
 type JSONRecord = Record<string, unknown>;
@@ -44,7 +43,7 @@ function empty(status: number, requestID: string, setCookie?: string): Response 
 
 function error(category: string, requestID: string, status = 400, setCookie?: string): Response {
   const safe = errorCategories.has(category) ? category : "provider";
-  const messages: Record<string, string> = { validation: "Некорректный запрос.", not_found: "Данные не найдены.", busy: "Запрос уже выполняется.", config: "Сервис временно недоступен.", storage: "Хранилище истории временно недоступно." };
+  const messages: Record<string, string> = { validation: "Некорректный запрос.", not_found: "Данные не найдены.", busy: "Запрос уже выполняется.", config: "Сервис временно недоступен.", storage: "Хранилище истории временно недоступно.", context_limit: "Контекст диалога превышает лимит модели. Начните новый диалог." };
   return response({ error: { category: safe, message: messages[safe] ?? "Не удалось получить ответ. Повторите отправку." } }, status, requestID, setCookie);
 }
 
@@ -94,7 +93,7 @@ async function readJSON(request: Request): Promise<JSONRecord | null> {
 }
 
 function only(value: JSONRecord, keys: string[]): boolean { return Object.keys(value).every((key) => keys.includes(key)); }
-function text(value: unknown): string | null { return typeof value === "string" && value.trim() && Array.from(value).length <= maxTextRunes ? value : null; }
+function text(value: unknown): string | null { return typeof value === "string" && value.trim() ? value : null; }
 function string(value: unknown): string | null { return typeof value === "string" && value.trim() ? value : null; }
 
 function projectError(value: unknown): { category: string; message: string } | null {
@@ -106,19 +105,36 @@ function projectError(value: unknown): { category: string; message: string } | n
   return typeof category === "string" && typeof message === "string" && errorCategories.has(category) ? { category, message } : null;
 }
 
+function tokenCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function projectUsage(value: unknown): JSONRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as JSONRecord;
+  if (!only(item, ["prompt_tokens", "completion_tokens"]) || !tokenCount(item.prompt_tokens) || !tokenCount(item.completion_tokens) || !Number.isSafeInteger(item.prompt_tokens + item.completion_tokens)) return null;
+  return { prompt_tokens: item.prompt_tokens, completion_tokens: item.completion_tokens };
+}
+
 function projectMessage(value: unknown): JSONRecord | null {
   if (!value || typeof value !== "object") return null;
   const item = value as JSONRecord;
-  if (!only(item, ["id", "client_message_id", "role", "text", "status", "created_at", "error_category"]) || !string(item.id) || (item.role !== "user" && item.role !== "assistant") || typeof item.text !== "string" || !["pending", "success", "error"].includes(item.status as string) || typeof item.created_at !== "string") return null;
+  if (!only(item, ["id", "client_message_id", "role", "text", "status", "created_at", "error_category", "usage", "attempts"]) || !string(item.id) || (item.role !== "user" && item.role !== "assistant") || typeof item.text !== "string" || !["pending", "success", "error"].includes(item.status as string) || typeof item.created_at !== "string") return null;
   if (item.client_message_id !== undefined && !string(item.client_message_id)) return null;
   if (item.error_category !== undefined && !errorCategories.has(item.error_category as string)) return null;
-  return item;
+  // Attempt accounting stays on the backend; only public message data crosses the BFF.
+  const projected: JSONRecord = { id: item.id, role: item.role, text: item.text, status: item.status, created_at: item.created_at };
+  if (item.client_message_id !== undefined) projected.client_message_id = item.client_message_id;
+  if (item.error_category !== undefined) projected.error_category = item.error_category;
+  const usage = projectUsage(item.usage);
+  if (item.role === "assistant" && usage) projected.usage = usage;
+  return projected;
 }
 
 function projectDialog(value: unknown): JSONRecord | null {
   if (!value || typeof value !== "object") return null;
   const item = value as JSONRecord;
-  if (!only(item, ["id", "title", "title_status", "created_at", "updated_at", "messages"]) || !string(item.id) || typeof item.title !== "string" || !["idle", "pending", "success", "error"].includes(item.title_status as string) || typeof item.created_at !== "string" || typeof item.updated_at !== "string" || !Array.isArray(item.messages)) return null;
+  if (!only(item, ["id", "title", "title_status", "created_at", "updated_at", "messages", "accounted_tokens"]) || !string(item.id) || typeof item.title !== "string" || !["idle", "pending", "success", "error"].includes(item.title_status as string) || typeof item.created_at !== "string" || typeof item.updated_at !== "string" || !Array.isArray(item.messages) || !tokenCount(item.accounted_tokens)) return null;
   const messages = item.messages.map(projectMessage);
   return messages.every(Boolean) ? { ...item, messages } : null;
 }
@@ -144,7 +160,8 @@ function projectLogs(value: unknown): JSONRecord | null {
   for (const value of item.logs) {
     if (!value || typeof value !== "object") return null;
     const log = value as JSONRecord;
-    if (!only(log, ["timestamp", "source", "event", "result", "correlation_id", "dialog_id", "message_id", "duration_ms", "error_category", "text"]) || typeof log.timestamp !== "string" || (log.source !== "frontend" && log.source !== "backend") || !string(log.event) || !string(log.result) || !string(log.correlation_id) || (log.dialog_id !== undefined && !string(log.dialog_id)) || (log.message_id !== undefined && !string(log.message_id)) || (log.duration_ms !== undefined && (typeof log.duration_ms !== "number" || !Number.isFinite(log.duration_ms))) || (log.error_category !== undefined && !errorCategories.has(log.error_category as string) && log.error_category !== "cancelled") || (log.text !== undefined && typeof log.text !== "string")) return null;
+    if (!only(log, ["timestamp", "source", "event", "result", "correlation_id", "dialog_id", "message_id", "duration_ms", "error_category", "text", "attempt_id", "usage"]) || typeof log.timestamp !== "string" || (log.source !== "frontend" && log.source !== "backend") || !string(log.event) || !string(log.result) || !string(log.correlation_id) || (log.dialog_id !== undefined && !string(log.dialog_id)) || (log.message_id !== undefined && !string(log.message_id)) || (log.duration_ms !== undefined && (typeof log.duration_ms !== "number" || !Number.isFinite(log.duration_ms))) || (log.error_category !== undefined && !errorCategories.has(log.error_category as string) && log.error_category !== "cancelled") || (log.text !== undefined && typeof log.text !== "string")) return null;
+    if ((log.attempt_id !== undefined && !string(log.attempt_id)) || (log.usage !== undefined && !projectUsage(log.usage))) return null;
     logs.push(log);
   }
   return { found: item.found, log_text_payloads: item.log_text_payloads, logs };

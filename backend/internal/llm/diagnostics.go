@@ -47,3 +47,14 @@ func transportFailure(err error) string {
 	}
 	return "network"
 }
+
+type attemptIDKey struct{}
+
+func WithAttemptID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, attemptIDKey{}, id)
+}
+
+func AttemptID(ctx context.Context) string {
+	value, _ := ctx.Value(attemptIDKey{}).(string)
+	return value
+}

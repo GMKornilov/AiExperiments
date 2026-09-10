@@ -17,7 +17,7 @@ import (
 	"aichallenge/week_1/task_1/internal/session"
 )
 
-const maxBody = 64 << 10
+const maxBody = 32 << 20
 
 type Store interface {
 	Create(string, agent.DialogSnapshot) (session.Dialog, error)
@@ -63,7 +63,14 @@ func New(store Store, loadSnapshot func() (agent.DialogSnapshot, error), journal
 			},
 			Finished: func(ctx context.Context, dialogID, messageID string, elapsed time.Duration, dialog session.Dialog) {
 				result, category, answer := attemptOutcome(dialog)
-				h.logContext(ctx, "backend", "llm_finish", result, dialogID, messageID, elapsed, category, answer)
+				record := observability.Record{Source: "backend", Event: "llm_finish", Result: result, CorrelationID: llm.RequestID(ctx), DialogID: dialogID, MessageID: messageID, DurationMS: elapsed.Milliseconds(), ErrorCategory: category, Text: answer}
+				for _, message := range dialog.Messages {
+					if message.ID == messageID && len(message.Attempts) > 0 {
+						attempt := message.Attempts[len(message.Attempts)-1]
+						record.AttemptID, record.Usage = attempt.ID, attempt.Usage
+					}
+				}
+				h.journal.Log(record, "")
 			},
 			TitleStarted: func(ctx context.Context, dialogID, messageID string) {
 				h.logContext(ctx, "backend", "title_start", "success", dialogID, messageID, 0, "", "")
@@ -363,7 +370,7 @@ func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, 400, "validation")
 		return
 	}
-	if p.ErrorCategory != "" && !map[string]bool{"validation": true, "network": true, "timeout": true, "provider": true, "invalid_response": true, "cancelled": true, "storage": true}[p.ErrorCategory] {
+	if p.ErrorCategory != "" && !map[string]bool{"validation": true, "network": true, "timeout": true, "provider": true, "context_limit": true, "invalid_response": true, "cancelled": true, "storage": true}[p.ErrorCategory] {
 		h.fail(w, 400, "validation")
 		return
 	}
@@ -410,7 +417,7 @@ func (h *Handler) log(r *http.Request, source, event, result, did, mid string, d
 	h.logContext(r.Context(), source, event, result, did, mid, d, category, text)
 }
 func (h *Handler) logContext(ctx context.Context, source, event, result, did, mid string, d time.Duration, category, text string) {
-	h.journal.Log(observability.Record{Source: source, Event: event, Result: result, CorrelationID: llm.RequestID(ctx), DialogID: did, MessageID: mid, DurationMS: d.Milliseconds(), ErrorCategory: category, Text: text}, "")
+	h.journal.Log(observability.Record{Source: source, Event: event, Result: result, CorrelationID: llm.RequestID(ctx), DialogID: did, MessageID: mid, AttemptID: llm.AttemptID(ctx), DurationMS: d.Milliseconds(), ErrorCategory: category, Text: text}, "")
 }
 func (h *Handler) ok(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -451,6 +458,7 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 }
 
 type messageDTO struct {
+	Usage           *llm.Usage   `json:"usage,omitempty"`
 	ID              string       `json:"id"`
 	ClientMessageID string       `json:"client_message_id,omitempty"`
 	Role            string       `json:"role"`
@@ -460,18 +468,19 @@ type messageDTO struct {
 	ErrorCategory   string       `json:"error_category,omitempty"`
 }
 type dialogDTOType struct {
-	ID          string       `json:"id"`
-	Title       string       `json:"title"`
-	TitleStatus string       `json:"title_status"`
-	CreatedAt   time.Time    `json:"created_at"`
-	UpdatedAt   time.Time    `json:"updated_at"`
-	Messages    []messageDTO `json:"messages"`
+	AccountedTokens int64        `json:"accounted_tokens"`
+	ID              string       `json:"id"`
+	Title           string       `json:"title"`
+	TitleStatus     string       `json:"title_status"`
+	CreatedAt       time.Time    `json:"created_at"`
+	UpdatedAt       time.Time    `json:"updated_at"`
+	Messages        []messageDTO `json:"messages"`
 }
 
 func dialogDTO(d session.Dialog) dialogDTOType {
-	out := dialogDTOType{ID: d.ID, Title: d.Title, TitleStatus: d.TitleStatus, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt, Messages: make([]messageDTO, 0, len(d.Messages))}
+	out := dialogDTOType{ID: d.ID, Title: d.Title, TitleStatus: d.TitleStatus, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt, AccountedTokens: d.AccountedTokens, Messages: make([]messageDTO, 0, len(d.Messages))}
 	for _, m := range d.Messages {
-		out.Messages = append(out.Messages, messageDTO{ID: m.ID, ClientMessageID: m.ClientID, Role: m.Role, Text: m.Text, Status: m.Status, CreatedAt: m.CreatedAt, ErrorCategory: m.ErrorCategory})
+		out.Messages = append(out.Messages, messageDTO{ID: m.ID, ClientMessageID: m.ClientID, Role: m.Role, Text: m.Text, Status: m.Status, CreatedAt: m.CreatedAt, ErrorCategory: m.ErrorCategory, Usage: m.Usage})
 	}
 	return out
 }

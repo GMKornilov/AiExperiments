@@ -24,6 +24,9 @@ System prompt, credential, Authorization, содержимое конфигур�
 Записи содержат timestamp, source, event, result, correlation_id, а при наличии —
 dialog_id и message_id. Завершённые операции содержат duration_ms; ошибки — безопасную
 error_category. Correlation ID HTTP-запроса возвращается в `X-Request-ID`.
+События основной LLM-попытки содержат `attempt_id`; `llm_finish` включает
+`usage` с подтверждёнными входными и выходными токенами, если статистика получена.
+Расход хранится в JSON вместе с историей независимо от очистки журнала при рестарте.
 Ошибки до создания диалога доступны через server console.
 
 ```sh
@@ -45,6 +48,7 @@ go run ./cmd/api-server --config=config.yaml 2>&1 | tee /tmp/barista-backend.log
 | network | Соединение не установлено или прервано |
 | timeout | Истёк timeout снимка или ожидания BFF |
 | provider | Провайдер вернул ошибку |
+| context_limit | Провайдер подтвердил превышение допустимого размера контекста |
 | invalid_response | Ответ пустой, слишком большой или имеет неверный формат |
 | busy | В сеансе уже выполняется попытка либо требуется retry |
 | not_found | Диалог отсутствует или недоступен этому браузеру |

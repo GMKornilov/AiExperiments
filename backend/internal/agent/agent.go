@@ -11,12 +11,9 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"aichallenge/week_1/task_1/internal/llm"
 )
-
-const MaxUserRunes = 4000
 
 // ErrorCategory is a safe public category for an unsuccessful LLM attempt.
 type ErrorCategory string
@@ -25,6 +22,7 @@ const (
 	ErrorTimeout         ErrorCategory = "timeout"
 	ErrorNetwork         ErrorCategory = "network"
 	ErrorProvider        ErrorCategory = "provider"
+	ErrorContextLimit    ErrorCategory = "context_limit"
 	ErrorInvalidResponse ErrorCategory = "invalid_response"
 )
 
@@ -96,14 +94,21 @@ func (s Snapshot) Validate() error {
 }
 
 // Message is a persisted dialog message. ClientID exists only on user messages.
+type Attempt struct {
+	ID            string     `json:"id"`
+	Usage         *llm.Usage `json:"usage,omitempty"`
+	ErrorCategory string     `json:"error_category,omitempty"`
+}
 type Message struct {
-	ID            string    `json:"id"`
-	ClientID      string    `json:"client_message_id,omitempty"`
-	Role          string    `json:"role"`
-	Text          string    `json:"text"`
-	Status        Status    `json:"status"`
-	CreatedAt     time.Time `json:"created_at"`
-	ErrorCategory string    `json:"error_category,omitempty"`
+	Usage         *llm.Usage `json:"usage,omitempty"`
+	Attempts      []Attempt  `json:"attempts,omitempty"`
+	ID            string     `json:"id"`
+	ClientID      string     `json:"client_message_id,omitempty"`
+	Role          string     `json:"role"`
+	Text          string     `json:"text"`
+	Status        Status     `json:"status"`
+	CreatedAt     time.Time  `json:"created_at"`
+	ErrorCategory string     `json:"error_category,omitempty"`
 }
 
 // Provider performs exactly one upstream completion.
@@ -133,10 +138,25 @@ func RestoreConversation(snapshot Snapshot, messages []Message) (*Conversation, 
 	if err != nil {
 		return nil, err
 	}
-	c.messages = append([]Message(nil), messages...)
+	c.messages = CloneMessages(messages)
+	var accounted int64
 	clients := make(map[string]bool)
 	for i := range c.messages {
 		m := &c.messages[i]
+		if m.Usage != nil && (!m.Usage.Valid() || m.Role != "assistant") {
+			return nil, fmt.Errorf("некорректная статистика сообщения")
+		}
+		for j, attempt := range m.Attempts {
+			if m.Role != "user" || attempt.ID != fmt.Sprintf("%s-a-%d", m.ID, j+1) {
+				return nil, fmt.Errorf("некорректный учёт попыток")
+			}
+			if attempt.Usage != nil {
+				if !attempt.Usage.Valid() || attempt.Usage.PromptTokens+attempt.Usage.CompletionTokens > llm.MaxSafeTokens-accounted {
+					return nil, fmt.Errorf("некорректный расход токенов")
+				}
+				accounted += attempt.Usage.PromptTokens + attempt.Usage.CompletionTokens
+			}
+		}
 		id, err := strconv.ParseUint(strings.TrimPrefix(m.ID, "m-"), 10, 64)
 		if err != nil || m.ID != fmt.Sprintf("m-%d", id) || id != uint64(i+1) || strings.TrimSpace(m.Text) == "" || m.CreatedAt.IsZero() {
 			return nil, fmt.Errorf("некорректная история сообщений")
@@ -149,12 +169,26 @@ func RestoreConversation(snapshot Snapshot, messages []Message) (*Conversation, 
 			if m.Status == StatusPending {
 				m.Status = StatusError
 				m.ErrorCategory = "cancelled"
+				if len(m.Attempts) > 0 {
+					m.Attempts[len(m.Attempts)-1].ErrorCategory = "cancelled"
+				}
 			}
 			if (m.Status == StatusError && i != len(messages)-1) || (m.Status == StatusSuccess && i+1 >= len(messages)) || (m.Status != StatusError && m.Status != StatusSuccess) {
 				return nil, fmt.Errorf("некорректный статус user-реплики")
 			}
 		} else if m.Role != "assistant" || m.Status != StatusSuccess || m.ClientID != "" {
 			return nil, fmt.Errorf("некорректная assistant-реплика")
+		}
+		if m.Role == "assistant" {
+			attempts := c.messages[i-1].Attempts
+			if len(attempts) > 0 {
+				last := attempts[len(attempts)-1]
+				if last.ErrorCategory != "" || (last.Usage == nil) != (m.Usage == nil) || (m.Usage != nil && *m.Usage != *last.Usage) {
+					return nil, fmt.Errorf("статистика ответа не соответствует попытке")
+				}
+			} else if m.Usage != nil {
+				return nil, fmt.Errorf("отсутствует попытка для статистики ответа")
+			}
 		}
 		c.nextID = id
 	}
@@ -172,7 +206,7 @@ func (c *Conversation) Snapshot() Snapshot {
 func (c *Conversation) Messages() []Message {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return append([]Message(nil), c.messages...)
+	return CloneMessages(c.messages)
 }
 
 // FindClientMessage finds a user message accepted under a client-generated ID.
@@ -181,7 +215,7 @@ func (c *Conversation) FindClientMessage(clientID string) (Message, bool) {
 	defer c.mu.Unlock()
 	for _, message := range c.messages {
 		if message.Role == "user" && message.ClientID == clientID {
-			return message, true
+			return CloneMessages([]Message{message})[0], true
 		}
 	}
 	return Message{}, false
@@ -195,9 +229,6 @@ func (c *Conversation) Begin(clientID, text string) (Message, error) {
 	if strings.TrimSpace(text) == "" {
 		return Message{}, fmt.Errorf("сообщение не должно быть пустым")
 	}
-	if utf8.RuneCountInString(text) > MaxUserRunes {
-		return Message{}, fmt.Errorf("сообщение не должно превышать %d символов", MaxUserRunes)
-	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, existing := range c.messages {
@@ -207,8 +238,9 @@ func (c *Conversation) Begin(clientID, text string) (Message, error) {
 	}
 	c.nextID++
 	message := Message{ID: fmt.Sprintf("m-%d", c.nextID), ClientID: clientID, Role: "user", Text: text, Status: StatusPending, CreatedAt: time.Now()}
+	message.Attempts = []Attempt{{ID: message.ID + "-a-1"}}
 	c.messages = append(c.messages, message)
-	return message, nil
+	return CloneMessages([]Message{message})[0], nil
 }
 
 // Retry marks an errored user message pending again.
@@ -225,7 +257,8 @@ func (c *Conversation) Retry(messageID string) (Message, error) {
 		}
 		message.Status = StatusPending
 		message.ErrorCategory = ""
-		return *message, nil
+		message.Attempts = append(message.Attempts, Attempt{ID: fmt.Sprintf("%s-a-%d", message.ID, len(message.Attempts)+1)})
+		return CloneMessages([]Message{*message})[0], nil
 	}
 	return Message{}, fmt.Errorf("сообщение не найдено")
 }
@@ -256,6 +289,10 @@ func (c *Conversation) Context(messageID string) ([]llm.Message, error) {
 
 // Finish stores exactly one assistant message on success, or marks the user errored.
 func (c *Conversation) Finish(messageID, answer string, attemptErr error) error {
+	return c.finishCompletion(messageID, llm.Completion{Text: answer}, attemptErr)
+}
+func (c *Conversation) finishCompletion(messageID string, result llm.Completion, attemptErr error) error {
+	answer := result.Text
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for index := range c.messages {
@@ -266,6 +303,19 @@ func (c *Conversation) Finish(messageID, answer string, attemptErr error) error 
 		if message.Role != "user" || message.Status != StatusPending {
 			return fmt.Errorf("попытка больше не активна")
 		}
+		usage := result.Usage
+		if usage != nil {
+			copied := *usage
+			usage = &copied
+			if !usage.Valid() || usage.PromptTokens+usage.CompletionTokens > llm.MaxSafeTokens-c.accountedTokensLocked() {
+				usage = nil
+			}
+		}
+		attempt := Attempt{ID: message.Attempts[len(message.Attempts)-1].ID, Usage: usage}
+		if attemptErr != nil || strings.TrimSpace(answer) == "" {
+			attempt.ErrorCategory = errorCategory(attemptErr)
+		}
+		message.Attempts[len(message.Attempts)-1] = attempt
 		if attemptErr != nil || strings.TrimSpace(answer) == "" {
 			message.Status = StatusError
 			message.ErrorCategory = errorCategory(attemptErr)
@@ -273,7 +323,7 @@ func (c *Conversation) Finish(messageID, answer string, attemptErr error) error 
 		}
 		message.Status = StatusSuccess
 		c.nextID++
-		c.messages = append(c.messages, Message{ID: fmt.Sprintf("m-%d", c.nextID), Role: "assistant", Text: answer, Status: StatusSuccess, CreatedAt: time.Now()})
+		c.messages = append(c.messages, Message{ID: fmt.Sprintf("m-%d", c.nextID), Role: "assistant", Text: answer, Usage: usage, Status: StatusSuccess, CreatedAt: time.Now()})
 		return nil
 	}
 	return fmt.Errorf("сообщение не найдено")
@@ -287,6 +337,12 @@ func (c *Conversation) Attempt(ctx context.Context, provider Provider, messageID
 	messages, err := c.Context(messageID)
 	if err != nil {
 		return err
+	}
+	if metered, ok := provider.(interface {
+		CompleteWithUsage(context.Context, Snapshot, []llm.Message) (llm.Completion, error)
+	}); ok {
+		result, attemptErr := metered.CompleteWithUsage(ctx, c.Snapshot(), messages)
+		return c.finishCompletion(messageID, result, attemptErr)
 	}
 	answer, attemptErr := provider.Complete(ctx, c.Snapshot(), messages)
 	return c.Finish(messageID, answer, attemptErr)
@@ -311,4 +367,46 @@ func errorCategory(err error) string {
 		return string(ErrorNetwork)
 	}
 	return string(ErrorProvider)
+}
+
+// AccountedTokens derives the total from completed chat attempts, never reads.
+func (c *Conversation) AccountedTokens() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.accountedTokensLocked()
+}
+func (c *Conversation) accountedTokensLocked() int64 {
+	return AccountedTokens(c.messages)
+}
+
+// AccountedTokens sums the confirmed ledger entries in a validated history snapshot.
+func AccountedTokens(messages []Message) int64 {
+	var total int64
+	for _, message := range messages {
+		for _, attempt := range message.Attempts {
+			if attempt.Usage != nil {
+				total += attempt.Usage.PromptTokens + attempt.Usage.CompletionTokens
+			}
+		}
+	}
+	return total
+}
+
+// CloneMessages protects the mutable history and its nested usage records.
+func CloneMessages(messages []Message) []Message {
+	result := append([]Message(nil), messages...)
+	for i := range result {
+		if result[i].Usage != nil {
+			usage := *result[i].Usage
+			result[i].Usage = &usage
+		}
+		result[i].Attempts = append([]Attempt(nil), result[i].Attempts...)
+		for j := range result[i].Attempts {
+			if result[i].Attempts[j].Usage != nil {
+				usage := *result[i].Attempts[j].Usage
+				result[i].Attempts[j].Usage = &usage
+			}
+		}
+	}
+	return result
 }

@@ -1,6 +1,7 @@
 export type MessageRole = "user" | "assistant";
 export type MessageStatus = "pending" | "success" | "error";
-export type ErrorCategory = "config" | "validation" | "network" | "timeout" | "provider" | "invalid_response" | "not_found" | "busy" | "cancelled" | "storage";
+export type ErrorCategory = "config" | "validation" | "network" | "timeout" | "provider" | "invalid_response" | "not_found" | "busy" | "cancelled" | "storage" | "context_limit";
+export type TokenUsage = { prompt_tokens: number; completion_tokens: number };
 
 export type BaristaMessage = {
   id: string;
@@ -10,11 +11,12 @@ export type BaristaMessage = {
   status: MessageStatus;
   created_at: string;
   error_category?: ErrorCategory;
+  usage?: TokenUsage;
   localOnly?: boolean;
 };
 
 export type TitleStatus = "idle" | "pending" | "success" | "error";
-export type Dialog = { id: string; title: string; title_status: TitleStatus; created_at: string; updated_at: string; messages: BaristaMessage[] };
+export type Dialog = { id: string; title: string; title_status: TitleStatus; created_at: string; updated_at: string; messages: BaristaMessage[]; accounted_tokens: number };
 export type DialogList = { dialogs: Dialog[]; selected_dialog_id?: string | null };
 export type APIError = { category: ErrorCategory; message: string };
 export type LogEvent = "dialog_created" | "dialog_selected" | "dialog_deleted" | "dialog_id_copied" | "message_sent" | "message_retried" | "message_copied" | "dialog_validation_failed" | "message_failed" | "admin_lookup" | "admin_refresh";

@@ -44,5 +44,6 @@ export const baristaClient = {
 };
 
 export function userFacingError(error: unknown) {
+  if (error instanceof BaristaAPIError && error.category === "context_limit") return "Контекст диалога превышает лимит модели. Начните новый диалог.";
   return error instanceof BaristaAPIError && error.category === "validation" ? error.message : genericError;
 }

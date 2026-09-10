@@ -12,13 +12,17 @@ import (
 type OpenAIProvider struct{}
 
 func (OpenAIProvider) Complete(ctx context.Context, snapshot Snapshot, messages []llm.Message) (string, error) {
-	answer, err := llm.NewClient(snapshot.BaseURL, snapshot.APIKey, snapshot.Timeout).ChatMessages(ctx, snapshot.Model, messages, snapshot.Temperature)
+	result, err := (OpenAIProvider{}).CompleteWithUsage(ctx, snapshot, messages)
+	return result.Text, err
+}
+func (OpenAIProvider) CompleteWithUsage(ctx context.Context, snapshot Snapshot, messages []llm.Message) (llm.Completion, error) {
+	answer, err := llm.NewClient(snapshot.BaseURL, snapshot.APIKey, snapshot.Timeout).ChatCompletion(ctx, snapshot.Model, messages, snapshot.Temperature)
 	if err != nil {
 		var upstream *llm.Error
 		if errors.As(err, &upstream) {
-			return "", &AttemptError{Category: ErrorCategory(upstream.Kind), Err: err}
+			return answer, &AttemptError{Category: ErrorCategory(upstream.Kind), Err: err}
 		}
-		return "", &AttemptError{Category: ErrorProvider, Err: err}
+		return answer, &AttemptError{Category: ErrorProvider, Err: err}
 	}
 	return answer, nil
 }

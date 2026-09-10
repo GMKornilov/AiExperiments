@@ -1,0 +1,31 @@
+import { expect, test } from "@playwright/test";
+
+test("long messages collapse, expand and collapse independently on desktop and mobile", async ({ page }) => {
+  const text = "Для приготовления кофе важны помол, температура воды и время экстракции. ".repeat(35);
+  const messages = [text, text, "Короткий ответ"].map((text, index) => ({ id: `m-${index}`, role: index === 0 ? "user" : "assistant", text, status: "success", created_at: "2026-09-10T00:00:00Z" }));
+  const dialog = { id: "test", title: "Проверка сообщений", title_status: "success", created_at: "2026-09-10T00:00:00Z", updated_at: "2026-09-10T00:00:00Z", messages, accounted_tokens: 0 };
+  await page.route("**/api/**", (route) => route.fulfill({ json: { dialogs: [dialog], selected_dialog_id: "test" } }));
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Развернуть", exact: true })).toHaveCount(2);
+  const first = page.getByRole("region", { name: "Переписка" }).locator("article").first();
+  const button = first.getByRole("button", { name: "Развернуть", exact: true });
+  const id = await button.getAttribute("aria-controls");
+  const height = () => page.evaluate((id) => document.getElementById(id).getBoundingClientRect().height, id);
+  const collapsedHeight = await height();
+  await button.focus();
+  await page.keyboard.press("Enter");
+  await expect(first.getByRole("button", { name: "Свернуть", exact: true })).toHaveAttribute("aria-expanded", "true");
+  expect(await height()).toBeGreaterThan(collapsedHeight * 2);
+  await expect(page.getByRole("button", { name: "Развернуть", exact: true })).toHaveCount(1);
+  await first.getByRole("button", { name: "Свернуть", exact: true }).click();
+  expect(await height()).toBeCloseTo(collapsedHeight, 0);
+  await first.getByRole("button", { name: "Копировать сообщение" }).click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(text);
+  await page.setViewportSize({ width: 320, height: 800 });
+  await expect(button).toBeVisible();
+  expect(await height()).toBeLessThanOrEqual(collapsedHeight + 1);
+  await button.click();
+  expect(await height()).toBeGreaterThan(collapsedHeight * 2);
+  await first.getByRole("button", { name: "Свернуть", exact: true }).click();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
