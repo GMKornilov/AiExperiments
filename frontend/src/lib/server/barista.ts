@@ -1,7 +1,6 @@
 import "server-only";
 
-const maxBodyBytes = 64 * 1024;
-const maxTextRunes = 4_000;
+const maxBodyBytes = 32 * 1024 * 1024;
 const timeoutMilliseconds = 35_000;
 const bodyTimeoutMilliseconds = 10_000;
 const sessionCookie = "barista_session";
@@ -94,7 +93,7 @@ async function readJSON(request: Request): Promise<JSONRecord | null> {
 }
 
 function only(value: JSONRecord, keys: string[]): boolean { return Object.keys(value).every((key) => keys.includes(key)); }
-function text(value: unknown): string | null { return typeof value === "string" && value.trim() && Array.from(value).length <= maxTextRunes ? value : null; }
+function text(value: unknown): string | null { return typeof value === "string" && value.trim() ? value : null; }
 function string(value: unknown): string | null { return typeof value === "string" && value.trim() ? value : null; }
 
 function projectError(value: unknown): { category: string; message: string } | null {

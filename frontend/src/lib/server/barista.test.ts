@@ -6,6 +6,16 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(
 const dialog = { id: "d", title: "Новый диалог", title_status: "idle", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", messages: [], accounted_tokens: 0 };
 
 describe("barista BFF", () => {
+  it("forwards a 14 MB prompt unchanged", async () => {
+    const value = "123456 ".repeat(2_000_000);
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(dialog));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await sendMessage(new Request("http://web/api/dialogs/d/messages", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ client_message_id: "large", text: value }) }), "d");
+    expect(result.status).toBe(200);
+    const call = fetchMock.mock.calls.find(([url]) => new URL(url).pathname.endsWith("/messages"));
+    expect(JSON.parse(call![1].body).text).toBe(value);
+  });
+
   it("projects confirmed usage and hides the backend attempt ledger", async () => {
     const usage = { prompt_tokens: 100, completion_tokens: 20 };
     const saved = { ...dialog, accounted_tokens: 120, messages: [

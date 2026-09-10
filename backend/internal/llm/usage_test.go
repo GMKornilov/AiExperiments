@@ -48,6 +48,9 @@ func TestContextLimitRequiresExplicitProviderSignal(t *testing.T) {
 		want ErrorKind
 	}{
 		{`{"error":{"code":"context_length_exceeded"}}`, ErrorContextLimit},
+		{`{"error":{"message":"This model's maximum context length is 1048576 tokens. However, you requested 6000348 tokens (6000348 in the messages, 0 in the completion). Please reduce the length of the messages or completion.","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}`, ErrorContextLimit},
+		{`{"error":{"message":"maximum context length is unavailable"}}`, ErrorProvider},
+		{`{"error":{"message":"request body too large"}}`, ErrorProvider},
 		{`{"error":{"code":"invalid_request_error","message":"bad request"}}`, ErrorProvider},
 		{`{"error":{"message":"context"}}`, ErrorProvider},
 	} {

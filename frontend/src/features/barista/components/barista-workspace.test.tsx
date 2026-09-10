@@ -125,13 +125,13 @@ describe("BaristaWorkspace", () => {
     resolveSend(new Response(JSON.stringify(dialog()), { headers: { "Content-Type": "application/json" } }));
   });
 
-  it("считает лимит ввода Unicode code points", async () => {
+  it("отправляет текст длиннее прежнего лимита в 4000 символов", async () => {
     const request = vi.fn()
       .mockImplementationOnce(() => json({ dialogs: [dialog()], selected_dialog_id: "dialog-123" }))
       .mockImplementationOnce(() => json(dialog()));
     vi.stubGlobal("fetch", request);
     render(<BaristaWorkspace />);
-    const value = "😀".repeat(4000);
+    const value = "😀".repeat(5000);
     fireEvent.change(await screen.findByLabelText("Ваш вопрос"), { target: { value } });
     fireEvent.click(screen.getByRole("button", { name: "Отправить" }));
     await waitFor(() => expect(request).toHaveBeenCalledTimes(2));

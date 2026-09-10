@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
-import { MarkdownContent } from "@/components/markdown-content/markdown-content";
+import { CollapsibleMessage } from "./collapsible-message";
 import { BaristaAPIError, baristaClient, userFacingError } from "../lib/chat-client";
 import type { BaristaMessage, Dialog } from "../model/types";
 import styles from "./barista-workspace.module.css";
@@ -100,8 +100,8 @@ export function BaristaWorkspace() {
     event?.preventDefault();
     if (!selected || messagePending || hasError(selected)) return;
     const normalized = text.trim();
-    if (!normalized || Array.from(normalized).length > 4000) {
-      setError("Введите вопрос длиной до 4 000 символов.");
+    if (!normalized) {
+      setError("Введите вопрос.");
       void baristaClient.event("dialog_validation_failed", { dialog_id: selected.id, error_category: "validation" });
       return;
     }
@@ -194,7 +194,7 @@ export function BaristaWorkspace() {
           {selected.messages.length === 0 && <div className={styles.empty}><p>Задайте вопрос о зёрнах, помоле или рецепте.</p></div>}
           {selected.messages.map((message) => <article className={`${styles.bubble} ${message.role === "user" ? styles.userBubble : styles.assistantBubble}`} key={message.id}>
             <div className={styles.messageActions}><span>{message.role === "user" ? "Вы" : "Бариста"}</span><button type="button" className={styles.iconButton} aria-label="Копировать сообщение" onClick={() => void copy(message)}><CopyIcon /></button></div>
-            <MarkdownContent>{message.text}</MarkdownContent>
+            <CollapsibleMessage key={`${selected.id}-${message.id}`} text={message.text} />
             {message.role === "assistant" && <p className={styles.tokenUsage}>{message.usage ? `Вход: ${message.usage.prompt_tokens} токенов · Выход: ${message.usage.completion_tokens} токенов` : "Токены: нет данных"}</p>}
             {message.status === "pending" && <p className={styles.status} role="status">Бариста готовит ответ…</p>}
             {message.status === "error" && <div className={styles.failed}><p>{userFacingError(new BaristaAPIError(message.error_category ?? "network"))}</p>{message.role === "user" && <button type="button" className={styles.iconButton} aria-label="Повторить отправку" onClick={() => void retry(message)}><RetryIcon /></button>}</div>}
@@ -203,8 +203,8 @@ export function BaristaWorkspace() {
         <form className={styles.composer} onSubmit={send}>
           <p className={styles.accountedTokens} role="status">Учтено токенов: {selected.accounted_tokens}</p>
           <label htmlFor="barista-message">Ваш вопрос</label>
-          <textarea id="barista-message" value={text} rows={3} disabled={composerDisabled} onChange={(event) => setText(event.target.value)} onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder="Например: эспрессо горчит — что изменить?" />
-          <div><span>{Array.from(text).length}/4000</span><button type="submit" disabled={composerDisabled || !text.trim()}>Отправить</button></div>
+          <textarea id="barista-message" value={text.length > 20_000 ? text.slice(0, 1000) : text} readOnly={text.length > 20_000} onPaste={(event) => { const pasted = event.clipboardData.getData("text"); if (pasted.length > 20_000) { event.preventDefault(); const element = event.currentTarget; setText(text.slice(0, element.selectionStart) + pasted + text.slice(element.selectionEnd)); } }} rows={3} disabled={composerDisabled} onChange={(event) => setText(event.target.value)} onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder="Например: эспрессо горчит — что изменить?" />
+          <div>{text.length > 20_000 && <p>Большой промпт: {text.length.toLocaleString("ru-RU")} символов. Показано превью; будет отправлен полный текст. <button type="button" onClick={() => setText("")}>Очистить промпт</button></p>}<button type="submit" disabled={composerDisabled || !text.trim()}>Отправить</button></div>
           {selected && hasError(selected) && <p className={styles.blocked}>{selected.messages.some((message) => message.status === "error" && message.error_category === "context_limit") ? "Начните новый диалог: повторная отправка сохранит тот же контекст." : "Повторите ошибочную отправку, чтобы продолжить диалог."}</p>}
         </form>
       </>}

@@ -11,12 +11,9 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"aichallenge/week_1/task_1/internal/llm"
 )
-
-const MaxUserRunes = 4000
 
 // ErrorCategory is a safe public category for an unsuccessful LLM attempt.
 type ErrorCategory string
@@ -231,9 +228,6 @@ func (c *Conversation) Begin(clientID, text string) (Message, error) {
 	}
 	if strings.TrimSpace(text) == "" {
 		return Message{}, fmt.Errorf("сообщение не должно быть пустым")
-	}
-	if utf8.RuneCountInString(text) > MaxUserRunes {
-		return Message{}, fmt.Errorf("сообщение не должно превышать %d символов", MaxUserRunes)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()

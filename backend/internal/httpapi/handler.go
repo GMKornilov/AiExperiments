@@ -17,7 +17,7 @@ import (
 	"aichallenge/week_1/task_1/internal/session"
 )
 
-const maxBody = 64 << 10
+const maxBody = 32 << 20
 
 type Store interface {
 	Create(string, agent.DialogSnapshot) (session.Dialog, error)

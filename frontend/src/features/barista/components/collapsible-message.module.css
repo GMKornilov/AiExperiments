@@ -1,0 +1,5 @@
+.message { min-width: 0; line-height: 1.6; }
+.plain { white-space: pre-wrap; overflow-wrap: anywhere; }
+.collapsed { max-height: 5lh; overflow: hidden; }
+.toggle { display: block; margin-top: .5rem; padding: .3rem 0; border: 0; background: transparent; color: var(--color-accent-light); font: inherit; font-size: .85rem; cursor: pointer; text-decoration: underline; text-underline-offset: .2em; }
+.toggle:focus-visible { outline: 2px solid var(--color-accent-light); outline-offset: 3px; border-radius: 2px; }

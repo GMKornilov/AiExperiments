@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"strings"
@@ -71,7 +72,20 @@ func (c *Client) ChatMessages(ctx context.Context, model string, messages []Mess
 	result, err := c.ChatCompletion(ctx, model, messages, temperature)
 	return result.Text, err
 }
-func (c *Client) ChatCompletion(ctx context.Context, model string, messages []Message, temperature float64) (Completion, error) {
+func (c *Client) ChatCompletion(ctx context.Context, model string, messages []Message, temperature float64) (completion Completion, completionErr error) {
+	started := time.Now()
+	status := 0
+	defer func() {
+		if completionErr == nil {
+			return
+		}
+		var typed *Error
+		category := ErrorProvider
+		if errors.As(completionErr, &typed) {
+			category = typed.Kind
+		}
+		slog.Warn("llm_request_failed", "correlation_id", RequestID(ctx), "attempt_id", AttemptID(ctx), "http_status", status, "error_category", category, "result", "failure", "duration_ms", time.Since(started).Milliseconds())
+	}()
 	if strings.TrimSpace(c.baseURL) == "" || strings.TrimSpace(c.apiKey) == "" || strings.TrimSpace(model) == "" || len(messages) == 0 {
 		return Completion{}, &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid completion configuration")}
 	}
@@ -99,6 +113,7 @@ func (c *Client) ChatCompletion(ctx context.Context, model string, messages []Me
 		return Completion{}, &Error{Kind: errorKind(err), err: err}
 	}
 	defer response.Body.Close()
+	status = response.StatusCode
 	if !strings.HasPrefix(strings.ToLower(response.Header.Get("Content-Type")), "application/json") {
 		kind := ErrorInvalidResponse
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
@@ -116,15 +131,16 @@ func (c *Client) ChatCompletion(ctx context.Context, model string, messages []Me
 	var envelope struct {
 		Usage json.RawMessage `json:"usage"`
 		Error struct {
-			Code string `json:"code"`
-			Type string `json:"type"`
+			Code    string `json:"code"`
+			Type    string `json:"type"`
+			Message string `json:"message"`
 		} `json:"error"`
 	}
 	_ = json.Unmarshal(data, &envelope)
 	result := Completion{Usage: parseUsage(envelope.Usage)}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		kind := ErrorProvider
-		if envelope.Error.Code == "context_length_exceeded" || envelope.Error.Code == "context_window_exceeded" || envelope.Error.Type == "context_length_exceeded" {
+		if isContextLimit(envelope.Error.Code, envelope.Error.Type, envelope.Error.Message) {
 			kind = ErrorContextLimit
 		}
 		return result, &Error{Kind: kind, err: fmt.Errorf("provider returned HTTP %d", response.StatusCode)}
@@ -135,6 +151,19 @@ func (c *Client) ChatCompletion(ctx context.Context, model string, messages []Me
 	}
 	result.Text = decoded.Choices[0].Message.Content
 	return result, nil
+}
+
+func isContextLimit(code, errorType, message string) bool {
+	for _, value := range []string{code, errorType} {
+		if value == "context_length_exceeded" || value == "context_window_exceeded" {
+			return true
+		}
+	}
+	// DeepSeek uses invalid_request_error even for context overflow.
+	message = strings.ToLower(message)
+	return strings.Contains(message, "maximum context length is") &&
+		strings.Contains(message, "however, you requested") &&
+		strings.Contains(message, "please reduce the length")
 }
 
 func errorKind(err error) ErrorKind {

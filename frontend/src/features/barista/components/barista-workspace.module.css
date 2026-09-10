@@ -23,6 +23,7 @@
 .tokenUsage,.accountedTokens { color:var(--color-muted); font-size:.8rem; line-height:1.5; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
 .tokenUsage { margin:.8rem 0 0; padding-top:.5rem; border-top:1px solid var(--color-line); }
 .accountedTokens { margin:0 0 .8rem; }
+.composer > div > button:only-child { margin-left:auto; }
 .titlePending { color:var(--color-muted); }.srOnly { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
 .failed { margin-top:.7rem; color:var(--color-danger); }.failed p { margin:.3rem 0 .7rem; }.failed button { border:1px solid var(--color-danger); border-radius:7px; padding:.4rem .6rem; color:var(--color-ink); background:transparent; }
 .composer { margin-top:auto; padding-top:1rem; border-top:1px solid var(--color-line); }.composer label { display:block; margin-bottom:.5rem; color:var(--color-muted); font:.72rem ui-monospace,SFMono-Regular,monospace; letter-spacing:.08em; text-transform:uppercase; }
