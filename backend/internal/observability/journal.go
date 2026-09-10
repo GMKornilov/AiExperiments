@@ -6,19 +6,23 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"aichallenge/week_1/task_1/internal/llm"
 )
 
 type Record struct {
-	Timestamp     time.Time `json:"timestamp"`
-	Source        string    `json:"source"`
-	Event         string    `json:"event"`
-	Result        string    `json:"result"`
-	CorrelationID string    `json:"correlation_id"`
-	DialogID      string    `json:"dialog_id,omitempty"`
-	MessageID     string    `json:"message_id,omitempty"`
-	DurationMS    int64     `json:"duration_ms"`
-	ErrorCategory string    `json:"error_category,omitempty"`
-	Text          string    `json:"text,omitempty"`
+	AttemptID     string     `json:"attempt_id,omitempty"`
+	Usage         *llm.Usage `json:"usage,omitempty"`
+	Timestamp     time.Time  `json:"timestamp"`
+	Source        string     `json:"source"`
+	Event         string     `json:"event"`
+	Result        string     `json:"result"`
+	CorrelationID string     `json:"correlation_id"`
+	DialogID      string     `json:"dialog_id,omitempty"`
+	MessageID     string     `json:"message_id,omitempty"`
+	DurationMS    int64      `json:"duration_ms"`
+	ErrorCategory string     `json:"error_category,omitempty"`
+	Text          string     `json:"text,omitempty"`
 }
 
 type Journal struct {
@@ -60,6 +64,12 @@ func (j *Journal) Log(record Record, credential string) {
 	}
 	j.mu.Unlock()
 	attrs := []any{"source", record.Source, "event", record.Event, "result", record.Result, "correlation_id", record.CorrelationID, "dialog_id", record.DialogID, "message_id", record.MessageID, "duration_ms", record.DurationMS, "error_category", record.ErrorCategory}
+	if record.AttemptID != "" {
+		attrs = append(attrs, "attempt_id", record.AttemptID)
+	}
+	if record.Usage != nil {
+		attrs = append(attrs, "usage", record.Usage)
+	}
 	if j.logText && record.Text != "" {
 		attrs = append(attrs, "text", record.Text)
 	}

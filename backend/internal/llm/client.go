@@ -29,6 +29,7 @@ const (
 	ErrorNetwork         ErrorKind = "network"
 	ErrorTimeout         ErrorKind = "timeout"
 	ErrorProvider        ErrorKind = "provider"
+	ErrorContextLimit    ErrorKind = "context_limit"
 	ErrorInvalidResponse ErrorKind = "invalid_response"
 )
 
@@ -67,51 +68,73 @@ type chatResponse struct {
 
 // ChatMessages sends the supplied messages in order and returns the first answer.
 func (c *Client) ChatMessages(ctx context.Context, model string, messages []Message, temperature float64) (string, error) {
+	result, err := c.ChatCompletion(ctx, model, messages, temperature)
+	return result.Text, err
+}
+func (c *Client) ChatCompletion(ctx context.Context, model string, messages []Message, temperature float64) (Completion, error) {
 	if strings.TrimSpace(c.baseURL) == "" || strings.TrimSpace(c.apiKey) == "" || strings.TrimSpace(model) == "" || len(messages) == 0 {
-		return "", &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid completion configuration")}
+		return Completion{}, &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid completion configuration")}
 	}
 	if math.IsNaN(temperature) || math.IsInf(temperature, 0) || temperature < 0 || temperature > 2 {
-		return "", &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid temperature")}
+		return Completion{}, &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid temperature")}
 	}
 	for _, message := range messages {
 		if (message.Role != "system" && message.Role != "user" && message.Role != "assistant") || strings.TrimSpace(message.Content) == "" {
-			return "", &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid message")}
+			return Completion{}, &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid message")}
 		}
 	}
 	body, err := json.Marshal(chatRequest{Model: model, Messages: messages, Temperature: temperature})
 	if err != nil {
-		return "", &Error{Kind: ErrorInvalidResponse, err: err}
+		return Completion{}, &Error{Kind: ErrorInvalidResponse, err: err}
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return "", &Error{Kind: ErrorInvalidResponse, err: err}
+		return Completion{}, &Error{Kind: ErrorInvalidResponse, err: err}
 	}
 	request.Header.Set("Authorization", "Bearer "+c.apiKey)
 	request.Header.Set("Content-Type", "application/json")
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return "", &Error{Kind: errorKind(err), err: err}
+		return Completion{}, &Error{Kind: errorKind(err), err: err}
 	}
 	defer response.Body.Close()
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return "", &Error{Kind: ErrorProvider, err: fmt.Errorf("provider returned HTTP %d", response.StatusCode)}
-	}
 	if !strings.HasPrefix(strings.ToLower(response.Header.Get("Content-Type")), "application/json") {
-		return "", &Error{Kind: ErrorInvalidResponse, err: errors.New("response is not JSON")}
+		kind := ErrorInvalidResponse
+		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+			kind = ErrorProvider
+		}
+		return Completion{}, &Error{Kind: kind, err: errors.New("response is not JSON")}
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {
-		return "", &Error{Kind: errorKind(err), err: err}
+		return Completion{}, &Error{Kind: errorKind(err), err: err}
 	}
 	if len(data) > maxResponseBytes {
-		return "", &Error{Kind: ErrorInvalidResponse, err: errors.New("response exceeds limit")}
+		return Completion{}, &Error{Kind: ErrorInvalidResponse, err: errors.New("response exceeds limit")}
+	}
+	var envelope struct {
+		Usage json.RawMessage `json:"usage"`
+		Error struct {
+			Code string `json:"code"`
+			Type string `json:"type"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(data, &envelope)
+	result := Completion{Usage: parseUsage(envelope.Usage)}
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		kind := ErrorProvider
+		if envelope.Error.Code == "context_length_exceeded" || envelope.Error.Code == "context_window_exceeded" || envelope.Error.Type == "context_length_exceeded" {
+			kind = ErrorContextLimit
+		}
+		return result, &Error{Kind: kind, err: fmt.Errorf("provider returned HTTP %d", response.StatusCode)}
 	}
 	var decoded chatResponse
 	if err := json.Unmarshal(data, &decoded); err != nil || len(decoded.Choices) == 0 || strings.TrimSpace(decoded.Choices[0].Message.Content) == "" {
-		return "", &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid completion response")}
+		return result, &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid completion response")}
 	}
-	return decoded.Choices[0].Message.Content, nil
+	result.Text = decoded.Choices[0].Message.Content
+	return result, nil
 }
 
 func errorKind(err error) ErrorKind {

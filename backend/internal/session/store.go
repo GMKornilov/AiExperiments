@@ -18,12 +18,13 @@ import (
 
 // Dialog is the safe public representation of a dialog.
 type Dialog struct {
-	ID          string          `json:"id"`
-	Title       string          `json:"title"`
-	TitleStatus string          `json:"title_status"`
-	Messages    []agent.Message `json:"messages"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
+	AccountedTokens int64           `json:"accounted_tokens"`
+	ID              string          `json:"id"`
+	Title           string          `json:"title"`
+	TitleStatus     string          `json:"title_status"`
+	Messages        []agent.Message `json:"messages"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
 }
 
 // Listing is a browser session's dialog list and selected dialog ID.
@@ -156,6 +157,7 @@ func (s *Store) List(sessionID string) Listing {
 	for _, stored := range session.dialogs {
 		dialog := cloneDialog(stored.dialog)
 		dialog.Messages = stored.agent.Messages()
+		dialog.AccountedTokens = agent.AccountedTokens(dialog.Messages)
 		listing.Dialogs = append(listing.Dialogs, dialog)
 	}
 	sort.Slice(listing.Dialogs, func(i, j int) bool { return listing.Dialogs[i].UpdatedAt.After(listing.Dialogs[j].UpdatedAt) })
@@ -172,6 +174,7 @@ func (s *Store) Get(sessionID, dialogID string) (Dialog, bool) {
 	}
 	dialog := cloneDialog(stored.dialog)
 	dialog.Messages = stored.agent.Messages()
+	dialog.AccountedTokens = agent.AccountedTokens(dialog.Messages)
 	return dialog, true
 }
 
@@ -387,6 +390,11 @@ func (s *Store) runAttempt(ctx context.Context, sessionID, dialogID string, stor
 	defer s.attemptWG.Done()
 	// Keep correlation values, but detach the accepted work from request cancellation.
 	attemptContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), stored.agent.Snapshot().Timeout)
+	for _, message := range stored.agent.Messages() {
+		if message.ID == messageID {
+			attemptContext = llm.WithAttemptID(attemptContext, message.Attempts[len(message.Attempts)-1].ID)
+		}
+	}
 	session.pending = true
 	session.cancel = cancel
 	session.pendingDialogID = dialogID
@@ -433,6 +441,7 @@ func (s *Store) dialogLocked(sessionID, dialogID string) *storedDialog {
 func (s *Store) dialogCopyLocked(stored *storedDialog) Dialog {
 	dialog := cloneDialog(stored.dialog)
 	dialog.Messages = stored.agent.Messages()
+	dialog.AccountedTokens = agent.AccountedTokens(dialog.Messages)
 	return dialog
 }
 
@@ -446,7 +455,7 @@ func (s *Store) getOrCreateLocked(sessionID string) *browserSession {
 }
 
 func cloneDialog(dialog Dialog) Dialog {
-	dialog.Messages = append([]agent.Message(nil), dialog.Messages...)
+	dialog.Messages = agent.CloneMessages(dialog.Messages)
 	return dialog
 }
 

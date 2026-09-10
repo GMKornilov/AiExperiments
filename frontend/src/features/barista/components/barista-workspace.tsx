@@ -118,6 +118,8 @@ export function BaristaWorkspace() {
       replaceDialog({ ...selected, messages: [...selected.messages, { ...optimistic, status: "error", error_category: category }], updated_at: optimistic.created_at });
       void baristaClient.event("message_failed", { dialog_id: selected.id, message_id: clientID, error_category: category });
       setError(userFacingError(cause));
+      // A failed attempt may still have confirmed usage. Read the persisted result.
+      try { replaceDialog(mergeServerDialog(await baristaClient.get(selected.id), { ...selected, messages: [...selected.messages, { ...optimistic, status: "error", error_category: category }] })); } catch { /* Keep the local error when the backend is unavailable. */ }
     }
   }
 
@@ -150,6 +152,9 @@ export function BaristaWorkspace() {
       const category = cause instanceof BaristaAPIError ? cause.category : "network";
       if (current) replaceDialog({ ...current, messages: [...current.messages.filter((item) => item.id !== canonical.id && item.client_message_id !== canonical.client_message_id), { ...canonical, status: "error", error_category: category, localOnly: persisted ? undefined : true }] });
       setError(userFacingError(cause));
+      if (current) {
+        try { replaceDialog(mergeServerDialog(await baristaClient.get(selected.id), { ...current, messages: persisted ? current.messages : [...current.messages, { ...canonical, status: "error", error_category: category, localOnly: true }] })); } catch { /* Keep the last known result. */ }
+      }
     } finally {
       retrying.current.delete(message.id);
     }
@@ -190,15 +195,17 @@ export function BaristaWorkspace() {
           {selected.messages.map((message) => <article className={`${styles.bubble} ${message.role === "user" ? styles.userBubble : styles.assistantBubble}`} key={message.id}>
             <div className={styles.messageActions}><span>{message.role === "user" ? "Вы" : "Бариста"}</span><button type="button" className={styles.iconButton} aria-label="Копировать сообщение" onClick={() => void copy(message)}><CopyIcon /></button></div>
             <MarkdownContent>{message.text}</MarkdownContent>
+            {message.role === "assistant" && <p className={styles.tokenUsage}>{message.usage ? `Вход: ${message.usage.prompt_tokens} токенов · Выход: ${message.usage.completion_tokens} токенов` : "Токены: нет данных"}</p>}
             {message.status === "pending" && <p className={styles.status} role="status">Бариста готовит ответ…</p>}
-            {message.status === "error" && <div className={styles.failed}><p>Не удалось получить ответ. Повторите отправку.</p>{message.role === "user" && <button type="button" className={styles.iconButton} aria-label="Повторить отправку" onClick={() => void retry(message)}><RetryIcon /></button>}</div>}
+            {message.status === "error" && <div className={styles.failed}><p>{userFacingError(new BaristaAPIError(message.error_category ?? "network"))}</p>{message.role === "user" && <button type="button" className={styles.iconButton} aria-label="Повторить отправку" onClick={() => void retry(message)}><RetryIcon /></button>}</div>}
           </article>)}
         </section>
         <form className={styles.composer} onSubmit={send}>
+          <p className={styles.accountedTokens} role="status">Учтено токенов: {selected.accounted_tokens}</p>
           <label htmlFor="barista-message">Ваш вопрос</label>
           <textarea id="barista-message" value={text} rows={3} disabled={composerDisabled} onChange={(event) => setText(event.target.value)} onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} placeholder="Например: эспрессо горчит — что изменить?" />
           <div><span>{Array.from(text).length}/4000</span><button type="submit" disabled={composerDisabled || !text.trim()}>Отправить</button></div>
-          {selected && hasError(selected) && <p className={styles.blocked}>Повторите ошибочную отправку, чтобы продолжить диалог.</p>}
+          {selected && hasError(selected) && <p className={styles.blocked}>{selected.messages.some((message) => message.status === "error" && message.error_category === "context_limit") ? "Начните новый диалог: повторная отправка сохранит тот же контекст." : "Повторите ошибочную отправку, чтобы продолжить диалог."}</p>}
         </form>
       </>}
     </main>
