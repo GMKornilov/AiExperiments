@@ -100,6 +100,6 @@ describe("barista BFF", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(dialog)));
     const controller = new AbortController(); controller.abort();
     const result = await createDialog(new Request("http://web/api/dialogs", { method: "POST", signal: controller.signal }));
-    expect(result.status).toBe(200); expect(timeout).toHaveBeenCalledWith(35_000);
+    expect(result.status).toBe(200); expect(timeout).toHaveBeenCalledWith(65_000);
   });
 });

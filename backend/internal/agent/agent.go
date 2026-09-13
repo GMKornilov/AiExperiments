@@ -46,21 +46,31 @@ const (
 
 // Snapshot is the immutable LLM setup captured when a dialog is created.
 type Snapshot struct {
-	BaseURL      string        `json:"base_url"`
-	APIKey       string        `json:"-"`
-	Model        string        `json:"model"`
-	SystemPrompt string        `json:"system_prompt"`
-	Timeout      time.Duration `json:"timeout"`
-	Temperature  float64       `json:"temperature"`
+	ContextWindowTokens int64         `json:"context_window_tokens,omitempty"`
+	BaseURL             string        `json:"base_url"`
+	APIKey              string        `json:"-"`
+	Model               string        `json:"model"`
+	SystemPrompt        string        `json:"system_prompt"`
+	Timeout             time.Duration `json:"timeout"`
+	Temperature         float64       `json:"temperature"`
 }
 
-// DialogSnapshot captures immutable configurations for chat and title generation.
+// DialogSnapshot captures immutable chat, title and optional summary configurations.
 type DialogSnapshot struct {
-	Chat Snapshot `json:"chat"`
-	Text Snapshot `json:"text"`
+	Chat    Snapshot       `json:"chat"`
+	Text    Snapshot       `json:"text"`
+	Summary *SummaryConfig `json:"summary,omitempty"`
 }
 
 func (s DialogSnapshot) Validate() error {
+	if s.Summary != nil {
+		if err := s.Summary.Snapshot.Validate(); err != nil {
+			return err
+		}
+		if s.Summary.KeepLastMessages < 1 || s.Summary.BatchSize < 1 {
+			return fmt.Errorf("некорректные настройки summary")
+		}
+	}
 	if err := s.Chat.Validate(); err != nil {
 		return fmt.Errorf("chat: %w", err)
 	}
@@ -72,6 +82,9 @@ func (s DialogSnapshot) Validate() error {
 
 // Validate checks the part of an LLM setup used by a conversation.
 func (s Snapshot) Validate() error {
+	if s.ContextWindowTokens < 0 || s.ContextWindowTokens > llm.MaxSafeTokens {
+		return fmt.Errorf("некорректный размер контекстного окна")
+	}
 	if strings.TrimSpace(s.BaseURL) == "" {
 		return fmt.Errorf("URL провайдера не должен быть пустым")
 	}
@@ -118,10 +131,12 @@ type Provider interface {
 
 // Conversation owns a snapshot and message history for one dialog.
 type Conversation struct {
-	mu       sync.Mutex
-	snapshot Snapshot
-	messages []Message
-	nextID   uint64
+	summaryConfig *SummaryConfig
+	compression   CompressionState
+	mu            sync.Mutex
+	snapshot      Snapshot
+	messages      []Message
+	nextID        uint64
 }
 
 // NewConversation creates an empty conversation using snapshot.
@@ -134,12 +149,21 @@ func NewConversation(snapshot Snapshot) (*Conversation, error) {
 
 // RestoreConversation validates saved history and makes interrupted work retryable.
 func RestoreConversation(snapshot Snapshot, messages []Message) (*Conversation, error) {
+	return RestoreCompactedConversation(snapshot, messages, CompressionState{})
+}
+
+// RestoreCompactedConversation restores the remaining tail with stable message IDs.
+func RestoreCompactedConversation(snapshot Snapshot, messages []Message, state CompressionState) (*Conversation, error) {
+	if state.PrunedMessages < 0 || state.ArchivedTokens < 0 || state.ArchivedTokens > llm.MaxSafeTokens {
+		return nil, fmt.Errorf("invalid compacted history")
+	}
 	c, err := NewConversation(snapshot)
 	if err != nil {
 		return nil, err
 	}
 	c.messages = CloneMessages(messages)
-	var accounted int64
+	accounted := state.ArchivedTokens
+	c.nextID = uint64(state.PrunedMessages)
 	clients := make(map[string]bool)
 	for i := range c.messages {
 		m := &c.messages[i]
@@ -158,10 +182,10 @@ func RestoreConversation(snapshot Snapshot, messages []Message) (*Conversation, 
 			}
 		}
 		id, err := strconv.ParseUint(strings.TrimPrefix(m.ID, "m-"), 10, 64)
-		if err != nil || m.ID != fmt.Sprintf("m-%d", id) || id != uint64(i+1) || strings.TrimSpace(m.Text) == "" || m.CreatedAt.IsZero() {
+		if err != nil || m.ID != fmt.Sprintf("m-%d", id) || id != uint64(i+1)+uint64(state.PrunedMessages) || strings.TrimSpace(m.Text) == "" || m.CreatedAt.IsZero() {
 			return nil, fmt.Errorf("некорректная история сообщений")
 		}
-		if i%2 == 0 {
+		if (i+state.PrunedMessages)%2 == 0 {
 			if m.Role != "user" || m.ClientID == "" || clients[m.ClientID] {
 				return nil, fmt.Errorf("некорректная user-реплика")
 			}
@@ -179,7 +203,7 @@ func RestoreConversation(snapshot Snapshot, messages []Message) (*Conversation, 
 		} else if m.Role != "assistant" || m.Status != StatusSuccess || m.ClientID != "" {
 			return nil, fmt.Errorf("некорректная assistant-реплика")
 		}
-		if m.Role == "assistant" {
+		if m.Role == "assistant" && i > 0 {
 			attempts := c.messages[i-1].Attempts
 			if len(attempts) > 0 {
 				last := attempts[len(attempts)-1]
@@ -277,11 +301,8 @@ func (c *Conversation) Context(messageID string) ([]llm.Message, error) {
 			messages = append(messages, llm.Message{Role: "user", Content: message.Text})
 			return messages, nil
 		}
-		if message.Role == "user" && message.Status == StatusSuccess && index+1 < len(c.messages) {
-			assistant := c.messages[index+1]
-			if assistant.Role == "assistant" && assistant.Status == StatusSuccess {
-				messages = append(messages, llm.Message{Role: "user", Content: message.Text}, llm.Message{Role: "assistant", Content: assistant.Text})
-			}
+		if message.Status == StatusSuccess {
+			messages = append(messages, llm.Message{Role: message.Role, Content: message.Text})
 		}
 	}
 	return nil, fmt.Errorf("сообщение не найдено")
@@ -311,6 +332,10 @@ func (c *Conversation) finishCompletion(messageID string, result llm.Completion,
 				usage = nil
 			}
 		}
+		if usage != nil {
+			value := usage.PromptTokens
+			c.compression.LastInputTokens = &value
+		}
 		attempt := Attempt{ID: message.Attempts[len(message.Attempts)-1].ID, Usage: usage}
 		if attemptErr != nil || strings.TrimSpace(answer) == "" {
 			attempt.ErrorCategory = errorCategory(attemptErr)
@@ -329,7 +354,7 @@ func (c *Conversation) finishCompletion(messageID string, result llm.Completion,
 	return fmt.Errorf("сообщение не найдено")
 }
 
-// Attempt builds context and performs exactly one provider call for a pending message.
+// Attempt optionally summarizes history, then performs one main completion.
 func (c *Conversation) Attempt(ctx context.Context, provider Provider, messageID string) error {
 	if provider == nil {
 		return c.Finish(messageID, "", fmt.Errorf("провайдер LLM не настроен"))
@@ -337,6 +362,10 @@ func (c *Conversation) Attempt(ctx context.Context, provider Provider, messageID
 	messages, err := c.Context(messageID)
 	if err != nil {
 		return err
+	}
+	messages, err = c.compress(ctx, provider, messages)
+	if err != nil {
+		return c.Finish(messageID, "", err)
 	}
 	if metered, ok := provider.(interface {
 		CompleteWithUsage(context.Context, Snapshot, []llm.Message) (llm.Completion, error)
@@ -376,7 +405,7 @@ func (c *Conversation) AccountedTokens() int64 {
 	return c.accountedTokensLocked()
 }
 func (c *Conversation) accountedTokensLocked() int64 {
-	return AccountedTokens(c.messages)
+	return c.compression.ArchivedTokens + AccountedTokens(c.messages)
 }
 
 // AccountedTokens sums the confirmed ledger entries in a validated history snapshot.

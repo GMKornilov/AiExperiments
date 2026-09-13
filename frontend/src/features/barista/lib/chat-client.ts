@@ -35,6 +35,8 @@ export const baristaClient = {
       throw new BaristaAPIError(payload?.error?.category ?? "network", payload?.error?.message || genericError);
     }
   },
+  compact: (id: string) => request<Dialog>(`/api/dialogs/${encodeURIComponent(id)}/compact`, { method: "POST" }),
+  compression: (id: string, enabled: boolean) => request<Dialog>(`/api/dialogs/${encodeURIComponent(id)}`, { ...json({ enabled }), method: "PATCH" }),
   send: (dialogID: string, clientMessageID: string, text: string) => request<Dialog>(`/api/dialogs/${encodeURIComponent(dialogID)}/messages`, json({ client_message_id: clientMessageID, text })),
   retry: (dialogID: string, messageID: string) => request<Dialog>(`/api/dialogs/${encodeURIComponent(dialogID)}/messages/${encodeURIComponent(messageID)}/retry`, { method: "POST" }),
   event: async (event: LogEvent, fields: { dialog_id?: string; message_id?: string; error_category?: ErrorCategory } = {}) => {

@@ -1,7 +1,8 @@
 import "server-only";
 
 const maxBodyBytes = 32 * 1024 * 1024;
-const timeoutMilliseconds = 35_000;
+// One summary followed by one chat completion (default 30s each).
+const timeoutMilliseconds = 65_000;
 const bodyTimeoutMilliseconds = 10_000;
 const sessionCookie = "barista_session";
 const errorCategories = new Set(["config", "validation", "network", "timeout", "provider", "invalid_response", "not_found", "busy", "cancelled", "storage", "context_limit"]);
@@ -134,7 +135,11 @@ function projectMessage(value: unknown): JSONRecord | null {
 function projectDialog(value: unknown): JSONRecord | null {
   if (!value || typeof value !== "object") return null;
   const item = value as JSONRecord;
-  if (!only(item, ["id", "title", "title_status", "created_at", "updated_at", "messages", "accounted_tokens"]) || !string(item.id) || typeof item.title !== "string" || !["idle", "pending", "success", "error"].includes(item.title_status as string) || typeof item.created_at !== "string" || typeof item.updated_at !== "string" || !Array.isArray(item.messages) || !tokenCount(item.accounted_tokens)) return null;
+  if (!only(item, ["id", "title", "title_status", "created_at", "updated_at", "messages", "accounted_tokens", "compression"]) || !string(item.id) || typeof item.title !== "string" || !["idle", "pending", "success", "error"].includes(item.title_status as string) || typeof item.created_at !== "string" || typeof item.updated_at !== "string" || !Array.isArray(item.messages) || !tokenCount(item.accounted_tokens)) return null;
+  if (item.compression !== undefined) {
+    const c = item.compression as JSONRecord;
+    if (!c || typeof c !== "object" || Array.isArray(c) || !only(c, ["pruned_messages", "archived_tokens", "available", "enabled", "summary", "covered_messages", "summary_tokens", "summary_usage_missing", "full_estimate", "sent_estimate", "last_input_tokens", "context_window_tokens"]) || (c.pruned_messages !== undefined && !tokenCount(c.pruned_messages)) || (c.archived_tokens !== undefined && !tokenCount(c.archived_tokens)) || typeof c.available !== "boolean" || typeof c.enabled !== "boolean" || typeof c.summary !== "string" || typeof c.summary_usage_missing !== "boolean" || ![c.covered_messages, c.summary_tokens, c.full_estimate, c.sent_estimate, c.context_window_tokens].every(tokenCount) || (c.last_input_tokens !== null && !tokenCount(c.last_input_tokens))) return null;
+  }
   const messages = item.messages.map(projectMessage);
   return messages.every(Boolean) ? { ...item, messages } : null;
 }
@@ -160,8 +165,9 @@ function projectLogs(value: unknown): JSONRecord | null {
   for (const value of item.logs) {
     if (!value || typeof value !== "object") return null;
     const log = value as JSONRecord;
-    if (!only(log, ["timestamp", "source", "event", "result", "correlation_id", "dialog_id", "message_id", "duration_ms", "error_category", "text", "attempt_id", "usage"]) || typeof log.timestamp !== "string" || (log.source !== "frontend" && log.source !== "backend") || !string(log.event) || !string(log.result) || !string(log.correlation_id) || (log.dialog_id !== undefined && !string(log.dialog_id)) || (log.message_id !== undefined && !string(log.message_id)) || (log.duration_ms !== undefined && (typeof log.duration_ms !== "number" || !Number.isFinite(log.duration_ms))) || (log.error_category !== undefined && !errorCategories.has(log.error_category as string) && log.error_category !== "cancelled") || (log.text !== undefined && typeof log.text !== "string")) return null;
+    if (!only(log, ["timestamp", "source", "event", "result", "correlation_id", "dialog_id", "message_id", "duration_ms", "error_category", "text", "attempt_id", "usage", "call_id", "purpose", "payload", "http_status", "truncated"]) || typeof log.timestamp !== "string" || (log.source !== "frontend" && log.source !== "backend") || !string(log.event) || !string(log.result) || !string(log.correlation_id) || (log.dialog_id !== undefined && !string(log.dialog_id)) || (log.message_id !== undefined && !string(log.message_id)) || (log.duration_ms !== undefined && (typeof log.duration_ms !== "number" || !Number.isFinite(log.duration_ms))) || (log.error_category !== undefined && !errorCategories.has(log.error_category as string) && log.error_category !== "cancelled") || (log.text !== undefined && typeof log.text !== "string")) return null;
     if ((log.attempt_id !== undefined && !string(log.attempt_id)) || (log.usage !== undefined && !projectUsage(log.usage))) return null;
+    if ((log.call_id !== undefined && !string(log.call_id)) || (log.purpose !== undefined && !["chat", "title", "summary"].includes(log.purpose as string)) || (log.payload !== undefined && typeof log.payload !== "string") || (log.http_status !== undefined && (!tokenCount(log.http_status) || log.http_status > 599)) || (log.truncated !== undefined && typeof log.truncated !== "boolean")) return null;
     logs.push(log);
   }
   return { found: item.found, log_text_payloads: item.log_text_payloads, logs };
@@ -222,3 +228,11 @@ export async function adminLogs(request: Request): Promise<Response> {
   if (!id || !["lookup", "refresh", "poll"].includes(action ?? "")) return validationFailure(request, requestID);
   return forward(request, "GET", `/api/admin/logs?dialog_id=${encodeURIComponent(id)}&action=${action}`);
 }
+
+export async function setCompression(request: Request, id: string): Promise<Response> {
+ const body = await readJSON(request);
+ if (!body || !only(body, ["enabled"]) || typeof body.enabled !== "boolean") return validationFailure(request, crypto.randomUUID(), id);
+ return forward(request, "PATCH", `/api/dialogs/${encodeURIComponent(id)}`, body);
+}
+
+export async function compactDialog(request: Request, id: string): Promise<Response> { return forward(request, "POST", `/api/dialogs/${encodeURIComponent(id)}/compact`); }

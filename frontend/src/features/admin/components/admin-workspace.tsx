@@ -1,13 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { CollapsibleMessage } from "@/features/barista/components/collapsible-message";
+import { LogCard } from "./log-card";
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { baristaClient } from "@/features/barista/lib/chat-client";
 import type { AdminLogsResponse } from "@/features/barista/model/types";
 import styles from "@/app/admin/page.module.css";
 
 export function AdminWorkspace() {
+  const [onlyLLM, setOnlyLLM] = useState(true);
   const [dialogID, setDialogID] = useState("");
   const [activeID, setActiveID] = useState("");
   const [data, setData] = useState<AdminLogsResponse | null>(null);
@@ -31,7 +32,7 @@ export function AdminWorkspace() {
     return () => window.clearInterval(timer);
   }, [activeID]);
 
-  const groups = [...(data?.logs ?? [])].sort((left, right) => left.timestamp.localeCompare(right.timestamp)).reduce<Record<string, AdminLogsResponse["logs"]>>((all, log) => { (all[log.source] ??= []).push(log); return all; }, {});
+  const logs = [...(data?.logs ?? [])].filter(log => !onlyLLM || log.call_id).sort((left, right) => left.timestamp.localeCompare(right.timestamp));
   return <main className={styles.page}>
     <Link href="/" className={styles.back}>← К чату</Link>
     <h1>Журнал диалога</h1><p>Введите точный ID диалога. Список доступных ID не показывается.</p>
@@ -40,6 +41,11 @@ export function AdminWorkspace() {
     </form>
     {error && <p role="alert" className={styles.error}>{error}</p>}
     {data && !data.found && <p className={styles.notFound}>Данные не найдены.</p>}
-    {data?.found && <><p className={styles.indicator}>Текстовые payloads: {data.log_text_payloads ? "включены" : "выключены"}</p>{(["frontend", "backend"] as const).map((source) => <section className={styles.group} key={source}><h2>{source === "frontend" ? "Frontend / BFF" : "Backend"}</h2>{groups[source]?.length ? <ol>{groups[source].map((log, index) => <li key={`${log.correlation_id}-${index}`}><time>{new Date(log.timestamp).toLocaleString("ru-RU")}</time><span>{log.event}</span><span>{log.result}</span><span>request: {log.correlation_id}</span>{log.error_category && <span>{log.error_category}</span>}{log.duration_ms !== undefined && <span>{log.duration_ms} мс</span>}{log.text && <CollapsibleMessage text={log.text} />}</li>)}</ol> : <p>Записей нет.</p>}</section>)}</>}
+    {data?.found && <>
+      <div className={styles.toolbar}><span className={styles.indicator}>Тела запросов и ответов: {data.log_text_payloads ? "включены" : "выключены"}</span><label><input type="checkbox" checked={onlyLLM} onChange={event => setOnlyLLM(event.target.checked)} /> Только LLM</label><span>{logs.length} событий · обновление каждые 5 с</span></div>
+      <p className={styles.notice}>Журнал хранится до перезапуска backend. Один ID вызова связывает запрос с ответом.</p>
+      <ol className={styles.timeline}>{logs.map((log, index) => <li key={`${log.timestamp}-${log.call_id ?? log.correlation_id}-${log.event}-${index}`}><LogCard log={log} /></li>)}</ol>
+      {!logs.length && <p className={styles.notFound}>Записей пока нет. Отправьте сообщение в диалоге или отключите фильтр LLM.</p>}
+    </>}
   </main>;
 }

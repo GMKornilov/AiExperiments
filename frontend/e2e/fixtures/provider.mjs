@@ -11,6 +11,13 @@ createServer(async (request, response) => {
   try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { response.writeHead(400).end(); return; }
   const text = body?.messages?.at(-1)?.content;
   if (typeof text !== "string") { response.writeHead(400).end(); return; }
+  if (body.model === "e2e-summary-model") {
+    response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({
+      choices: [{ message: { content: "Пользователь предпочитает кофе без молока; доза 18 г." } }],
+      usage: { prompt_tokens: 40, completion_tokens: 10 },
+    }));
+    return;
+  }
   const titleRequest = body.model === "e2e-title-model";
   const key = `${body.model}:${text}`;
   const count = (seen.get(key) ?? 0) + 1;

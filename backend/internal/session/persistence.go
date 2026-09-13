@@ -31,8 +31,9 @@ type diskSession struct {
 }
 
 type diskDialog struct {
-	Dialog   Dialog               `json:"dialog"`
-	Snapshot agent.DialogSnapshot `json:"snapshot"`
+	AgentMessages *[]agent.Message     `json:"agent_messages,omitempty"`
+	Dialog        Dialog               `json:"dialog"`
+	Snapshot      agent.DialogSnapshot `json:"snapshot"`
 }
 
 type diskIndex struct {
@@ -46,9 +47,10 @@ type diskIndexSession struct {
 }
 
 type diskChat struct {
-	Version  int                  `json:"version"`
-	Dialog   Dialog               `json:"dialog"`
-	Snapshot agent.DialogSnapshot `json:"snapshot"`
+	AgentMessages *[]agent.Message     `json:"agent_messages,omitempty"`
+	Version       int                  `json:"version"`
+	Dialog        Dialog               `json:"dialog"`
+	Snapshot      agent.DialogSnapshot `json:"snapshot"`
 }
 
 func dialogDirectory(path string) string {
@@ -107,7 +109,7 @@ func (s *Store) readState(data []byte) (diskState, error) {
 			if json.Unmarshal(body, &chat) != nil || chat.Version != 1 || chat.Dialog.ID != id {
 				return diskState{}, ErrStorage
 			}
-			saved.Dialogs = append(saved.Dialogs, diskDialog{Dialog: chat.Dialog, Snapshot: chat.Snapshot})
+			saved.Dialogs = append(saved.Dialogs, diskDialog{Dialog: chat.Dialog, Snapshot: chat.Snapshot, AgentMessages: chat.AgentMessages})
 			s.persistedDialogs[id] = body
 		}
 		state.Sessions[sid] = saved
@@ -116,7 +118,7 @@ func (s *Store) readState(data []byte) (diskState, error) {
 	return state, nil
 }
 
-// OpenStore loads durable conversations. The loader supplies credentials only;
+// OpenStore loads durable conversations. The loader supplies credentials and display limits;
 // prompts and model parameters always come from the saved snapshot.
 func OpenStore(provider agent.Provider, path string, loader func() (agent.DialogSnapshot, error)) (_ *Store, err error) {
 	started := time.Now()
@@ -168,15 +170,37 @@ func OpenStore(provider agent.Provider, path string, loader func() (agent.Dialog
 			if entry.Snapshot.Chat.BaseURL != credentials.Chat.BaseURL || entry.Snapshot.Text.BaseURL != credentials.Text.BaseURL {
 				return nil, fmt.Errorf("%w: credential endpoint mismatch", ErrStorage)
 			}
+			// Older dialogs predate summary snapshots. Add only this optional setup;
+			// preserve their original chat/text models, prompts and transcript.
+			if entry.Snapshot.Summary == nil && credentials.Summary != nil {
+				copied := *credentials.Summary
+				entry.Snapshot.Summary = &copied
+			}
+			if entry.Snapshot.Summary != nil {
+				if credentials.Summary == nil || entry.Snapshot.Summary.Snapshot.BaseURL != credentials.Summary.Snapshot.BaseURL {
+					return nil, fmt.Errorf("%w: summary credential endpoint mismatch", ErrStorage)
+				}
+				entry.Snapshot.Summary.Snapshot.APIKey = credentials.Summary.Snapshot.APIKey
+			}
+			if entry.Snapshot.Chat.Model == credentials.Chat.Model {
+				entry.Snapshot.Chat.ContextWindowTokens = credentials.Chat.ContextWindowTokens
+			}
 			entry.Snapshot.Chat.APIKey = credentials.Chat.APIKey
 			entry.Snapshot.Text.APIKey = credentials.Text.APIKey
 			if entry.Snapshot.Validate() != nil || !validDialogID(entry.Dialog.ID) || ids[entry.Dialog.ID] || entry.Dialog.CreatedAt.IsZero() || entry.Dialog.UpdatedAt.IsZero() {
 				return nil, ErrStorage
 			}
 			ids[entry.Dialog.ID] = true
-			conversation, err := agent.RestoreConversation(entry.Snapshot.Chat, entry.Dialog.Messages)
+			messages := entry.Dialog.Messages
+			if entry.AgentMessages != nil {
+				messages = *entry.AgentMessages
+			}
+			conversation, err := agent.RestoreCompactedConversation(entry.Snapshot.Chat, messages, entry.Dialog.Compression)
 			if err != nil {
 				return nil, fmt.Errorf("%w: invalid conversation", ErrStorage)
+			}
+			if err := conversation.ConfigureCompression(entry.Snapshot.Summary, entry.Dialog.Compression); err != nil {
+				return nil, fmt.Errorf("%w: invalid summary", ErrStorage)
 			}
 			switch entry.Dialog.TitleStatus {
 			case "pending":
@@ -215,6 +239,9 @@ func (s *Store) RegisterSecrets(register func(string, ...string)) {
 	for _, browser := range s.sessions {
 		for id, dialog := range browser.dialogs {
 			register(id, dialog.agent.Snapshot().APIKey, dialog.textSnapshot.APIKey)
+			if cfg := dialog.agent.SummaryConfig(); cfg != nil {
+				register(id, cfg.Snapshot.APIKey)
+			}
 		}
 	}
 }
@@ -247,7 +274,15 @@ func (s *Store) writeStateLocked() error {
 			}
 			current[id] = true
 			saved.DialogIDs = append(saved.DialogIDs, id)
-			chat := diskChat{Version: 1, Dialog: s.dialogCopyLocked(dialog), Snapshot: agent.DialogSnapshot{Chat: dialog.agent.Snapshot(), Text: dialog.textSnapshot}}
+			public := s.dialogCopyLocked(dialog)
+			tail := []agent.Message{}
+			for i, message := range public.Messages {
+				if message.ID == fmt.Sprintf("m-%d", public.Compression.PrunedMessages+1) {
+					tail = public.Messages[i:]
+					break
+				}
+			}
+			chat := diskChat{AgentMessages: &tail, Version: 1, Dialog: public, Snapshot: agent.DialogSnapshot{Chat: dialog.agent.Snapshot(), Text: dialog.textSnapshot, Summary: dialog.agent.SummaryConfig()}}
 			data, err := json.MarshalIndent(chat, "", "  ")
 			if err != nil {
 				return err

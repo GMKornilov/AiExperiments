@@ -2,6 +2,7 @@
 package observability
 
 import (
+	"encoding/json"
 	"log/slog"
 	"strings"
 	"sync"
@@ -11,6 +12,11 @@ import (
 )
 
 type Record struct {
+	CallID        string     `json:"call_id,omitempty"`
+	Purpose       string     `json:"purpose,omitempty"`
+	Payload       string     `json:"payload,omitempty"`
+	HTTPStatus    int        `json:"http_status,omitempty"`
+	Truncated     bool       `json:"truncated,omitempty"`
 	AttemptID     string     `json:"attempt_id,omitempty"`
 	Usage         *llm.Usage `json:"usage,omitempty"`
 	Timestamp     time.Time  `json:"timestamp"`
@@ -48,16 +54,19 @@ func (j *Journal) Log(record Record, credential string) {
 	j.mu.Lock()
 	if !j.logText {
 		record.Text = ""
+		record.Payload = ""
 	} else {
 		for _, secret := range append(j.secrets[record.DialogID], credential) {
 			if secret != "" {
 				record.Text = strings.ReplaceAll(record.Text, secret, "[REDACTED]")
+				record.Payload = redactPayload(record.Payload, secret)
 			}
 		}
 	}
 	deleted := record.DialogID != "" && j.deleted[record.DialogID]
 	if deleted {
 		record.Text = ""
+		record.Payload = ""
 	}
 	if !deleted {
 		j.records = append(j.records, record)
@@ -66,6 +75,19 @@ func (j *Journal) Log(record Record, credential string) {
 	attrs := []any{"source", record.Source, "event", record.Event, "result", record.Result, "correlation_id", record.CorrelationID, "dialog_id", record.DialogID, "message_id", record.MessageID, "duration_ms", record.DurationMS, "error_category", record.ErrorCategory}
 	if record.AttemptID != "" {
 		attrs = append(attrs, "attempt_id", record.AttemptID)
+	}
+	if record.CallID != "" {
+		attrs = append(attrs, "call_id", record.CallID, "purpose", record.Purpose, "http_status", record.HTTPStatus, "truncated", record.Truncated)
+	}
+	if record.Payload != "" {
+		var value any
+		decoder := json.NewDecoder(strings.NewReader(record.Payload))
+		decoder.UseNumber()
+		if json.Valid([]byte(record.Payload)) && decoder.Decode(&value) == nil {
+			attrs = append(attrs, "payload", value)
+		} else {
+			attrs = append(attrs, "payload", record.Payload)
+		}
 	}
 	if record.Usage != nil {
 		attrs = append(attrs, "usage", record.Usage)
@@ -124,3 +146,37 @@ func (j *Journal) DeleteDialog(dialogID string) {
 }
 
 func (j *Journal) LogTextPayloads() bool { return j.logText }
+
+func redactPayload(payload, secret string) string {
+	var value any
+	decoder := json.NewDecoder(strings.NewReader(payload))
+	decoder.UseNumber()
+	if !json.Valid([]byte(payload)) || decoder.Decode(&value) != nil {
+		return strings.ReplaceAll(payload, secret, "[REDACTED]")
+	}
+	var clean func(any) any
+	clean = func(value any) any {
+		switch v := value.(type) {
+		case string:
+			return strings.ReplaceAll(v, secret, "[REDACTED]")
+		case []any:
+			for i := range v {
+				v[i] = clean(v[i])
+			}
+			return v
+		case map[string]any:
+			result := make(map[string]any, len(v))
+			for k, item := range v {
+				result[strings.ReplaceAll(k, secret, "[REDACTED]")] = clean(item)
+			}
+			return result
+		default:
+			return value
+		}
+	}
+	data, err := json.Marshal(clean(value))
+	if err != nil {
+		return "[unavailable]"
+	}
+	return string(data)
+}

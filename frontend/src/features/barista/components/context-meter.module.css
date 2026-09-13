@@ -1,0 +1,14 @@
+.panel { display: grid; gap: 7px; margin: 12px 0; padding: 12px 14px; border: 1px solid var(--color-line); border-radius: 12px; background: rgb(10 5 3 / 35%); color: var(--color-muted); font-size: 0.8rem; min-width: 0; overflow-wrap: anywhere; }
+.heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px; }
+.track { width: 100%; height: 8px; border-radius: 99px; overflow: hidden; background: rgb(232 166 93 / 15%); }
+.fill { height: 100%; border-radius: inherit; background: var(--color-accent); transition: width 700ms cubic-bezier(.22, 1, .36, 1), background-color 400ms; }
+.summary { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }
+@media (prefers-reduced-motion: reduce) { .fill { transition: none; } }
+
+.panel { margin:0; padding:0; border:0; border-radius:0; background:transparent; gap:5px; font: .72rem/1.4 ui-monospace,SFMono-Regular,Consolas,monospace; }
+.panel strong { color:var(--color-ink); font-weight:500; }
+.track { height:5px; }
+.more[open] { max-height:100px; overflow:auto; }
+.more small { display:block; margin-top:5px; }
+.panel summary { cursor:pointer; }
+.summary { max-height:100px; }

@@ -23,6 +23,13 @@
 .tokenUsage,.accountedTokens { color:var(--color-muted); font-size:.8rem; line-height:1.5; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
 .tokenUsage { margin:.8rem 0 0; padding-top:.5rem; border-top:1px solid var(--color-line); }
 .accountedTokens { margin:0 0 .8rem; }
+.composer input[role="switch"] { appearance:none; width:2.1rem; height:1.2rem; margin:0 .5rem 0 0; border:1px solid var(--color-line); border-radius:99px; background:rgb(248 226 199 / 16%); vertical-align:middle; position:relative; cursor:pointer; }
+.composer input[role="switch"]::after { content:""; position:absolute; left:3px; top:3px; width:.7rem; height:.7rem; border-radius:50%; background:var(--color-ink); transition:transform 180ms; }
+.composer input[role="switch"]:checked { background:var(--color-accent); }
+.composer input[role="switch"]:checked::after { transform:translateX(.85rem); background:#28140a; }
+.composer input[role="switch"]:disabled { opacity:.5; cursor:not-allowed; }
+.composer input[role="switch"][aria-busy="true"] { cursor:progress; }
+@media (prefers-reduced-motion:reduce) { .composer input[role="switch"]::after { transition:none; } }
 .composer > div > button:only-child { margin-left:auto; }
 .titlePending { color:var(--color-muted); }.srOnly { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
 .failed { margin-top:.7rem; color:var(--color-danger); }.failed p { margin:.3rem 0 .7rem; }.failed button { border:1px solid var(--color-danger); border-radius:7px; padding:.4rem .6rem; color:var(--color-ink); background:transparent; }
@@ -31,3 +38,47 @@
 .composer button:disabled { cursor:wait; opacity:.55; }.error { margin:0 0 .8rem; padding:.7rem; border-radius:8px; color:var(--color-danger); background:rgb(151 45 28 / 20%); }.empty { display:grid; min-height:16rem; place-content:center; gap:.6rem; text-align:center; }.empty p { margin:0; color:var(--color-muted); }.empty button { justify-self:center; margin-top:.6rem; }
 .menuButton { display:none; }.dialogOverlay { position:fixed; inset:0; z-index:2; display:grid; place-items:center; padding:1rem; background:rgb(0 0 0 / 62%); }.confirm { width:min(28rem,100%); padding:1.4rem; border:1px solid var(--color-line); border-radius:14px; background:var(--color-surface-strong); box-shadow:var(--shadow-card); }.confirm p { color:var(--color-muted); line-height:1.45; }.confirm div { display:flex; justify-content:flex-end; gap:.6rem; }.confirm button:first-child { color:var(--color-ink); background:transparent; }.confirm .danger { background:var(--color-danger); }
 @media (max-width: 640px) { .shell { display:block; min-height:calc(100vh - 1rem); border-radius:0; }.menuButton { display:block; width:100%; padding:.7rem 1rem; border:0; color:var(--color-ink); background:var(--color-surface-strong); text-align:left; }.sidebar { display:none; }.sidebarOpen { display:block; border-right:0; border-bottom:1px solid var(--color-line); }.chat { min-height:calc(100vh - 3rem); padding:1rem; }.bubble { max-width:100%; }.messages { min-height:14rem; } }
+
+.inputAnchor { position:relative; }
+.commandPopover { position:absolute; z-index:5; bottom:calc(100% + .5rem); left:0; right:0; padding:.45rem; border:1px solid var(--color-line); border-radius:14px; background:var(--color-surface-strong); box-shadow:0 12px 36px rgb(0 0 0 / 45%); animation:commandAppear 140ms ease-out; }
+.commandPopover p { margin:.4rem .65rem .55rem; font-size:.7rem; color:var(--color-muted); }
+.commandPopover ul { margin:0; padding:0; list-style:none; }
+.commandPopover button { display:flex; width:100%; align-items:center; gap:.75rem; text-align:left; color:var(--color-ink); background:rgb(232 166 93 / 12%); border:1px solid transparent; }
+.commandPopover button:hover,.commandPopover button:focus-visible { border-color:var(--color-accent); background:rgb(232 166 93 / 20%); outline:none; }
+.commandPopover button:disabled { cursor:not-allowed; }
+.commandPopover strong { display:block; font:600 .9rem ui-monospace,monospace; }
+.commandPopover small { display:block; margin-top:.25rem; font-size:.75rem; font-weight:400; color:var(--color-muted); }
+.commandPopover kbd { margin-left:auto; color:var(--color-muted); }
+.commandIcon { flex-shrink:0; display:grid; place-items:center; width:2rem; height:2rem; border:1px solid var(--color-line); border-radius:8px; color:var(--color-accent); }
+@keyframes commandAppear { from { opacity:0; transform:translateY(5px); } to { opacity:1; transform:translateY(0); } }
+@media (prefers-reduced-motion:reduce) { .commandPopover { animation:none; } }
+
+.shell { min-height:0; height:100%; }
+.sidebar { overflow-y:auto; }
+.chat { overflow:hidden; padding:1rem 1.25rem; }
+.chatHeader { flex-shrink:0; padding-bottom:.65rem; }
+.chatHeader h1 { font-size:1.15rem; }
+.messages { min-height:0; overscroll-behavior:contain; scrollbar-gutter:stable; padding:.8rem 0; }
+.composer { flex-shrink:0; margin-top:0; padding-top:.5rem; border-top:0; font-family:Arial,sans-serif; }
+.contextStatus { margin:0 .55rem .5rem; padding:.7rem .85rem; border:1px solid var(--color-line); border-radius:14px; background:rgb(10 5 3 / 20%); }
+.threadID { display:flex; align-items:center; gap:.65rem; margin-bottom:.3rem; font:.72rem/1.3 ui-monospace,SFMono-Regular,Consolas,monospace; color:var(--color-muted); }
+.threadID code { min-width:0; overflow-wrap:anywhere; color:var(--color-ink); }
+.threadID button { margin-left:auto; padding:.2rem; min-width:1.5rem; min-height:1.5rem; color:var(--color-muted); background:transparent; }
+.composer > label { display:inline-block; font-size:.65rem; letter-spacing:0; text-transform:none; margin:0 .5rem .4rem; }
+.composer > .accountedTokens { display:inline-block; margin:0 .5rem .4rem; font-size:.65rem; }
+.composer textarea { display:block; resize:none; border-radius:16px; min-height:76px; padding:.8rem 1rem; }
+.composer > .status { margin:.3rem .5rem; font-size:.7rem; }
+.composer > div { margin-top:.4rem; }
+.composer > div > button { padding:.55rem .9rem; }
+@media (max-width:640px) {
+ .shell { display:flex; flex-direction:column; min-height:0; }
+ .menuButton { flex-shrink:0; }
+ .sidebarOpen { max-height:30%; flex-shrink:0; }
+ .chat { flex:1; min-height:0; padding:.5rem; }
+ .messages { min-height:0; }
+ .contextStatus { margin:0 .15rem .4rem; padding:.5rem .65rem; }
+ .threadID { font-size:.64rem; gap:.35rem; }
+ .composer textarea { min-height:70px; }
+}
+
+.bubble { flex-shrink:0; }

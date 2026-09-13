@@ -75,14 +75,23 @@ func (c *Client) ChatMessages(ctx context.Context, model string, messages []Mess
 func (c *Client) ChatCompletion(ctx context.Context, model string, messages []Message, temperature float64) (completion Completion, completionErr error) {
 	started := time.Now()
 	status := 0
+	callID := RequestID(WithRequestID(ctx, ""))
+	var responsePayload string
+	var sent, truncated bool
 	defer func() {
+		category := ""
+		if completionErr != nil {
+			category = string(ErrorProvider)
+			var typed *Error
+			if errors.As(completionErr, &typed) {
+				category = string(typed.Kind)
+			}
+		}
+		if sent {
+			emitTrace(ctx, Trace{CallID: callID, Event: "llm_response", Payload: responsePayload, HTTPStatus: status, DurationMS: time.Since(started).Milliseconds(), ErrorCategory: category, Truncated: truncated})
+		}
 		if completionErr == nil {
 			return
-		}
-		var typed *Error
-		category := ErrorProvider
-		if errors.As(completionErr, &typed) {
-			category = typed.Kind
 		}
 		slog.Warn("llm_request_failed", "correlation_id", RequestID(ctx), "attempt_id", AttemptID(ctx), "http_status", status, "error_category", category, "result", "failure", "duration_ms", time.Since(started).Milliseconds())
 	}()
@@ -108,25 +117,32 @@ func (c *Client) ChatCompletion(ctx context.Context, model string, messages []Me
 	request.Header.Set("Authorization", "Bearer "+c.apiKey)
 	request.Header.Set("Content-Type", "application/json")
 
+	emitTrace(ctx, Trace{CallID: callID, Event: "llm_request", Payload: string(body)})
+	sent = true
 	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return Completion{}, &Error{Kind: errorKind(err), err: err}
 	}
 	defer response.Body.Close()
 	status = response.StatusCode
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	truncated = len(data) > maxResponseBytes
+	if truncated {
+		data = data[:maxResponseBytes]
+	}
+	responsePayload = string(data)
+	if err != nil {
+		return Completion{}, &Error{Kind: errorKind(err), err: err}
+	}
+	if truncated {
+		return Completion{}, &Error{Kind: ErrorInvalidResponse, err: errors.New("response exceeds limit")}
+	}
 	if !strings.HasPrefix(strings.ToLower(response.Header.Get("Content-Type")), "application/json") {
 		kind := ErrorInvalidResponse
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 			kind = ErrorProvider
 		}
 		return Completion{}, &Error{Kind: kind, err: errors.New("response is not JSON")}
-	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
-	if err != nil {
-		return Completion{}, &Error{Kind: errorKind(err), err: err}
-	}
-	if len(data) > maxResponseBytes {
-		return Completion{}, &Error{Kind: ErrorInvalidResponse, err: errors.New("response exceeds limit")}
 	}
 	var envelope struct {
 		Usage json.RawMessage `json:"usage"`

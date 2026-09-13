@@ -18,13 +18,14 @@ import (
 
 // Dialog is the safe public representation of a dialog.
 type Dialog struct {
-	AccountedTokens int64           `json:"accounted_tokens"`
-	ID              string          `json:"id"`
-	Title           string          `json:"title"`
-	TitleStatus     string          `json:"title_status"`
-	Messages        []agent.Message `json:"messages"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
+	Compression     agent.CompressionState `json:"compression"`
+	AccountedTokens int64                  `json:"accounted_tokens"`
+	ID              string                 `json:"id"`
+	Title           string                 `json:"title"`
+	TitleStatus     string                 `json:"title_status"`
+	Messages        []agent.Message        `json:"messages"`
+	CreatedAt       time.Time              `json:"created_at"`
+	UpdatedAt       time.Time              `json:"updated_at"`
 }
 
 // Listing is a browser session's dialog list and selected dialog ID.
@@ -122,12 +123,15 @@ func (s *Store) Create(sessionID string, snapshot agent.DialogSnapshot) (Dialog,
 	if err != nil {
 		return Dialog{}, err
 	}
+	if err := conversation.ConfigureCompression(snapshot.Summary, agent.CompressionState{}); err != nil {
+		return Dialog{}, err
+	}
 	id, err := randomID()
 	if err != nil {
 		return Dialog{}, err
 	}
 	now := s.now()
-	dialog := Dialog{ID: id, Title: "Новый диалог", TitleStatus: "idle", CreatedAt: now, UpdatedAt: now}
+	dialog := Dialog{Compression: conversation.Compression(), ID: id, Title: "Новый диалог", TitleStatus: "idle", CreatedAt: now, UpdatedAt: now}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -155,9 +159,7 @@ func (s *Store) List(sessionID string) Listing {
 	}
 	listing := Listing{SelectedDialogID: session.selected}
 	for _, stored := range session.dialogs {
-		dialog := cloneDialog(stored.dialog)
-		dialog.Messages = stored.agent.Messages()
-		dialog.AccountedTokens = agent.AccountedTokens(dialog.Messages)
+		dialog := s.dialogCopyLocked(stored)
 		listing.Dialogs = append(listing.Dialogs, dialog)
 	}
 	sort.Slice(listing.Dialogs, func(i, j int) bool { return listing.Dialogs[i].UpdatedAt.After(listing.Dialogs[j].UpdatedAt) })
@@ -172,10 +174,7 @@ func (s *Store) Get(sessionID, dialogID string) (Dialog, bool) {
 	if stored == nil {
 		return Dialog{}, false
 	}
-	dialog := cloneDialog(stored.dialog)
-	dialog.Messages = stored.agent.Messages()
-	dialog.AccountedTokens = agent.AccountedTokens(dialog.Messages)
-	return dialog, true
+	return s.dialogCopyLocked(stored), true
 }
 
 // Exists reports whether a dialog remains in memory, regardless of browser session.
@@ -289,6 +288,7 @@ func (s *Store) Send(ctx context.Context, sessionID, dialogID, clientID, text st
 }
 
 func (s *Store) runTitle(ctx context.Context, cancel context.CancelFunc, sessionID, dialogID string, stored *storedDialog, messageID, text string, observer AttemptObserver) {
+	ctx = llm.WithPurpose(llm.WithAttemptID(ctx, messageID+"-title"), "title")
 	defer s.titleWG.Done()
 	defer cancel()
 	started := time.Now()
@@ -389,7 +389,11 @@ func (s *Store) runAttempt(ctx context.Context, sessionID, dialogID string, stor
 	s.attemptWG.Add(1)
 	defer s.attemptWG.Done()
 	// Keep correlation values, but detach the accepted work from request cancellation.
-	attemptContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), stored.agent.Snapshot().Timeout)
+	timeout := stored.agent.Snapshot().Timeout
+	if cfg := stored.agent.SummaryConfig(); cfg != nil {
+		timeout += cfg.Snapshot.Timeout
+	}
+	attemptContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	for _, message := range stored.agent.Messages() {
 		if message.ID == messageID {
 			attemptContext = llm.WithAttemptID(attemptContext, message.Attempts[len(message.Attempts)-1].ID)
@@ -419,7 +423,6 @@ func (s *Store) runAttempt(ctx context.Context, sessionID, dialogID string, stor
 	currentSession.pendingDialogID = ""
 	_ = attemptErr
 	stored.dialog.UpdatedAt = s.now()
-	stored.dialog.Messages = stored.agent.Messages()
 	dialog := s.dialogCopyLocked(stored)
 	observer = s.observer
 	saveErr := s.saveLocked(ctx)
@@ -439,9 +442,23 @@ func (s *Store) dialogLocked(sessionID, dialogID string) *storedDialog {
 }
 
 func (s *Store) dialogCopyLocked(stored *storedDialog) Dialog {
+	// The transcript belongs to the UI; it is never passed back into the agent.
+	tail, state := stored.agent.Memory()
+	positions := make(map[string]int, len(stored.dialog.Messages))
+	for i, message := range stored.dialog.Messages {
+		positions[message.ID] = i
+	}
+	for _, message := range tail {
+		if i, ok := positions[message.ID]; ok {
+			stored.dialog.Messages[i] = message
+		} else {
+			positions[message.ID] = len(stored.dialog.Messages)
+			stored.dialog.Messages = append(stored.dialog.Messages, message)
+		}
+	}
 	dialog := cloneDialog(stored.dialog)
-	dialog.Messages = stored.agent.Messages()
-	dialog.AccountedTokens = agent.AccountedTokens(dialog.Messages)
+	dialog.AccountedTokens = state.ArchivedTokens + agent.AccountedTokens(tail)
+	dialog.Compression = state
 	return dialog
 }
 
@@ -473,4 +490,69 @@ func randomID() (string, error) {
 		return "", fmt.Errorf("создание ID диалога: %w", err)
 	}
 	return hex.EncodeToString(bytes), nil
+}
+
+func (s *Store) SetCompression(ctx context.Context, sid, id string, enabled bool) (Dialog, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return Dialog{}, fmt.Errorf("хранилище закрыто")
+	}
+	if s.storageErr != nil {
+		return Dialog{}, s.storageErr
+	}
+	stored := s.dialogLocked(sid, id)
+	if stored == nil {
+		return Dialog{}, fmt.Errorf("диалог не найден")
+	}
+	if s.sessions[sid].pending {
+		return Dialog{}, fmt.Errorf("уже выполняется запрос")
+	}
+	if err := stored.agent.SetCompression(enabled); err != nil {
+		return Dialog{}, err
+	}
+	stored.dialog.UpdatedAt = s.now()
+	return s.dialogCopyLocked(stored), s.saveLocked(ctx)
+}
+
+// Compact runs a standalone summary without adding a transcript message.
+func (s *Store) Compact(ctx context.Context, sid, id string) (Dialog, error) {
+	s.mu.Lock()
+	if s.closed || s.storageErr != nil {
+		s.mu.Unlock()
+		return Dialog{}, ErrStorage
+	}
+	stored := s.dialogLocked(sid, id)
+	if stored == nil {
+		s.mu.Unlock()
+		return Dialog{}, fmt.Errorf("диалог не найден")
+	}
+	browser := s.sessions[sid]
+	if browser.pending {
+		s.mu.Unlock()
+		return Dialog{}, fmt.Errorf("уже выполняется запрос")
+	}
+	if stored.agent.SummaryConfig() == nil {
+		s.mu.Unlock()
+		return Dialog{}, fmt.Errorf("суммаризация не настроена")
+	}
+	compactCtx, cancel := context.WithCancel(ctx)
+	browser.pending, browser.cancel, browser.pendingDialogID = true, cancel, id
+	s.attemptWG.Add(1)
+	s.mu.Unlock()
+	defer s.attemptWG.Done()
+	err := stored.agent.Compact(compactCtx, s.provider)
+	cancel()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dialogLocked(sid, id) != stored {
+		return Dialog{}, fmt.Errorf("диалог не найден")
+	}
+	browser.pending, browser.cancel, browser.pendingDialogID = false, nil, ""
+	stored.dialog.UpdatedAt = s.now()
+	dialog := s.dialogCopyLocked(stored)
+	if saveErr := s.saveLocked(ctx); saveErr != nil {
+		return Dialog{}, saveErr
+	}
+	return dialog, err
 }
