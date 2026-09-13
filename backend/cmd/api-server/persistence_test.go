@@ -121,7 +121,7 @@ func TestServerProcessRestartRetainsAgentContext(t *testing.T) {
 	}
 	stop := start()
 	var dialog session.Dialog
-	if err := json.Unmarshal(call("POST", "/api/dialogs", ""), &dialog); err != nil {
+	if err := json.Unmarshal(call("POST", "/api/dialogs", `{"context_strategy":"sliding_window"}`), &dialog); err != nil {
 		t.Fatal(err)
 	}
 	call("POST", "/api/dialogs/"+dialog.ID+"/messages", `{"client_message_id":"one","text":"first"}`)

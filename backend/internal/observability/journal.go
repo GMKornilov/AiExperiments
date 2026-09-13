@@ -25,6 +25,7 @@ type Record struct {
 	Result        string     `json:"result"`
 	CorrelationID string     `json:"correlation_id"`
 	DialogID      string     `json:"dialog_id,omitempty"`
+	BranchID      string     `json:"branch_id,omitempty"`
 	MessageID     string     `json:"message_id,omitempty"`
 	DurationMS    int64      `json:"duration_ms"`
 	ErrorCategory string     `json:"error_category,omitempty"`
@@ -72,7 +73,7 @@ func (j *Journal) Log(record Record, credential string) {
 		j.records = append(j.records, record)
 	}
 	j.mu.Unlock()
-	attrs := []any{"source", record.Source, "event", record.Event, "result", record.Result, "correlation_id", record.CorrelationID, "dialog_id", record.DialogID, "message_id", record.MessageID, "duration_ms", record.DurationMS, "error_category", record.ErrorCategory}
+	attrs := []any{"source", record.Source, "event", record.Event, "result", record.Result, "correlation_id", record.CorrelationID, "dialog_id", record.DialogID, "branch_id", record.BranchID, "message_id", record.MessageID, "duration_ms", record.DurationMS, "error_category", record.ErrorCategory}
 	if record.AttemptID != "" {
 		attrs = append(attrs, "attempt_id", record.AttemptID)
 	}

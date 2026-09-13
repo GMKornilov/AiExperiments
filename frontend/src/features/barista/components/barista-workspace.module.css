@@ -3,7 +3,8 @@
 .newDialog,.empty button,.composer button,.confirm button { border:0; border-radius:10px; padding:.72rem .9rem; color:#28140a; background:var(--color-accent); font-weight:700; }
 .newDialog { width:100%; text-align:left; }
 .counter { margin:1rem .25rem .55rem; color:var(--color-muted); font:700 .68rem/1 ui-monospace,SFMono-Regular,monospace; letter-spacing:.1em; text-transform:uppercase; }
-.dialogRow { display:flex; gap:.2rem; margin:.2rem 0; min-width:0; }
+.dialogRow { display:grid; grid-template-columns:minmax(0,1fr); gap:.2rem; margin:.2rem 0; min-width:0; }
+.dialogMainRow { display:flex; gap:.2rem; min-width:0; }
 .dialogButton,.selectedDialog { min-width:0; flex:1; padding:.6rem; border:0; border-radius:8px; color:var(--color-ink); background:transparent; text-align:left; }
 .selectedDialog { background:rgb(232 166 93 / 16%); }
 .dialogButton:hover,.deleteButton:hover { background:rgb(248 226 199 / 10%); }
@@ -82,3 +83,19 @@
 }
 
 .bubble { flex-shrink:0; }
+.strategyPicker { width:min(100%,48rem); margin:.75rem 0; padding:.8rem; border:1px solid var(--color-line); border-radius:14px; min-width:0; }
+.strategyPicker legend { padding:0 .3rem; font-weight:700; }
+.strategyPicker p { margin:.15rem 0 .75rem; color:var(--color-muted); font-size:.85rem; }
+.strategyPicker [role="radiogroup"] { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.55rem; }
+.strategyPicker button { display:grid; min-width:0; min-height:5rem; padding:.75rem; border:1px solid var(--color-line); border-radius:10px; color:var(--color-ink); background:rgb(248 226 199 / 6%); text-align:left; }
+.strategyPicker button[aria-checked="true"] { border-color:var(--color-accent); background:rgb(232 166 93 / 16%); }
+.strategyPicker button:disabled { opacity:.58; cursor:not-allowed; }
+.strategyPicker small { margin-top:.3rem; color:var(--color-muted); overflow-wrap:anywhere; }
+.branchList { display:grid; grid-column:1 / -1; width:100%; gap:.18rem; padding:.15rem 0 .2rem .65rem; }
+.branchButton,.selectedBranch,.addBranch { min-width:0; padding:.45rem .55rem; border:0; border-radius:7px; color:var(--color-muted); background:transparent; text-align:left; overflow-wrap:anywhere; }
+.selectedBranch { color:var(--color-ink); background:rgb(232 166 93 / 16%); }
+.branchButton:hover,.addBranch:hover { background:rgb(248 226 199 / 10%); }
+.branchButton small,.selectedBranch small { float:right; color:var(--color-muted); }
+.addBranch { border:1px dashed var(--color-line); font-size:.78rem; }.addBranch:disabled { opacity:.55; cursor:not-allowed; }
+.factsPanel { margin:.4rem .55rem .65rem; min-width:0; color:var(--color-muted); font-size:.78rem; }.factsPanel summary { cursor:pointer; color:var(--color-ink); }.factsPanel dl { margin:.55rem 0 0; }.factsPanel dl div { display:grid; grid-template-columns:minmax(7rem,30%) minmax(0,1fr); gap:.5rem; padding:.35rem 0; border-top:1px solid var(--color-line); }.factsPanel dt { font-family:ui-monospace,monospace; overflow-wrap:anywhere; }.factsPanel dd { margin:0; overflow-wrap:anywhere; white-space:pre-wrap; }
+@media (max-width:640px) { .strategyPicker [role="radiogroup"] { grid-template-columns:1fr; }.factsPanel dl div { grid-template-columns:1fr; gap:.15rem; } }

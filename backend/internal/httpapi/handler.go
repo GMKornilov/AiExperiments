@@ -63,7 +63,7 @@ func New(store Store, loadSnapshot func() (agent.DialogSnapshot, error), journal
 			},
 			Finished: func(ctx context.Context, dialogID, messageID string, elapsed time.Duration, dialog session.Dialog) {
 				result, category, answer := attemptOutcome(dialog)
-				record := observability.Record{Source: "backend", Event: "llm_finish", Result: result, CorrelationID: llm.RequestID(ctx), DialogID: dialogID, MessageID: messageID, DurationMS: elapsed.Milliseconds(), ErrorCategory: category, Text: answer}
+				record := observability.Record{Source: "backend", Event: "llm_finish", Result: result, CorrelationID: llm.RequestID(ctx), DialogID: dialogID, BranchID: dialog.ActiveBranchID, MessageID: messageID, DurationMS: elapsed.Milliseconds(), ErrorCategory: category, Text: answer}
 				for _, message := range dialog.Messages {
 					if message.ID == messageID && len(message.Attempts) > 0 {
 						attempt := message.Attempts[len(message.Attempts)-1]
@@ -96,9 +96,12 @@ func SnapshotLoader(path string) func() (agent.DialogSnapshot, error) {
 		if err != nil {
 			return agent.DialogSnapshot{}, err
 		}
-		snap := agent.DialogSnapshot{Chat: endpointSnapshot(cfg.Chat), Text: endpointSnapshot(cfg.Text)}
+		snap := agent.DialogSnapshot{Chat: endpointSnapshot(cfg.Chat), Text: endpointSnapshot(cfg.Text), ContextWindowMessages: cfg.ContextWindowMessages}
 		if cfg.Summary != nil {
 			snap.Summary = &agent.SummaryConfig{Snapshot: endpointSnapshot(cfg.Summary.Endpoint), KeepLastMessages: cfg.Summary.KeepLastMessages, BatchSize: cfg.Summary.BatchSize}
+		}
+		if cfg.Facts != nil {
+			snap.Facts = &agent.FactsConfig{Snapshot: endpointSnapshot(cfg.Facts.Endpoint)}
 		}
 		return snap, nil
 	}
@@ -164,6 +167,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.events(w, r)
 		return
 	}
+	if r.URL.Path == "/api/context-strategies" {
+		h.contextStrategies(w, r)
+		return
+	}
 	if !strings.HasPrefix(r.URL.Path, "/api/dialogs") {
 		http.NotFound(w, r)
 		return
@@ -194,8 +201,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if trace.ErrorCategory != "" {
 			result = "failure"
 		}
+		branchID := ""
+		if dialog, ok := h.store.Get(sessionID, dialogID); ok {
+			branchID = dialog.ActiveBranchID
+		}
 		h.journal.Log(observability.Record{Source: "backend", Event: trace.Event, Result: result,
-			CorrelationID: llm.RequestID(ctx), DialogID: dialogID, AttemptID: llm.AttemptID(ctx),
+			CorrelationID: llm.RequestID(ctx), DialogID: dialogID, BranchID: branchID, AttemptID: llm.AttemptID(ctx),
 			CallID: trace.CallID, Purpose: trace.Purpose, Payload: trace.Payload, HTTPStatus: trace.HTTPStatus,
 			DurationMS: trace.DurationMS, ErrorCategory: trace.ErrorCategory, Truncated: trace.Truncated}, "")
 	}))
@@ -205,6 +216,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) == 3 && parts[2] == "compact" {
 		h.compact(w, r, sessionID, dialogID)
+		return
+	}
+	if len(parts) == 3 && parts[2] == "strategy" {
+		h.strategy(w, r, sessionID, dialogID)
+		return
+	}
+	if len(parts) == 3 && parts[2] == "branches" {
+		h.branches(w, r, sessionID, dialogID)
+		return
+	}
+	if len(parts) == 5 && parts[2] == "branches" && parts[4] == "select" {
+		h.selectBranch(w, r, sessionID, dialogID, parts[3])
 		return
 	}
 	if len(parts) == 3 && parts[2] == "select" {
@@ -227,6 +250,13 @@ func (h *Handler) dialogs(w http.ResponseWriter, r *http.Request, sid string) {
 	case http.MethodGet:
 		h.ok(w, listingDTO(h.store.List(sid)))
 	case http.MethodPost:
+		var payload struct {
+			ContextStrategy agent.ContextStrategy `json:"context_strategy"`
+		}
+		if !decode(w, r, &payload) || !payload.ContextStrategy.Valid() {
+			h.fail(w, http.StatusBadRequest, "validation")
+			return
+		}
 		started := time.Now()
 		snap, err := h.loadSnapshot()
 		if err != nil {
@@ -234,7 +264,14 @@ func (h *Handler) dialogs(w http.ResponseWriter, r *http.Request, sid string) {
 			h.fail(w, http.StatusServiceUnavailable, "config")
 			return
 		}
-		d, err := h.store.Create(sid, snap)
+		creator, ok := h.store.(interface {
+			CreateWithStrategy(string, agent.DialogSnapshot, agent.ContextStrategy) (session.Dialog, error)
+		})
+		if !ok {
+			h.fail(w, http.StatusServiceUnavailable, "config")
+			return
+		}
+		d, err := creator.CreateWithStrategy(sid, snap, payload.ContextStrategy)
 		if err != nil {
 			if errors.Is(err, session.ErrStorage) {
 				h.fail(w, http.StatusServiceUnavailable, "storage")
@@ -247,6 +284,9 @@ func (h *Handler) dialogs(w http.ResponseWriter, r *http.Request, sid string) {
 		if snap.Summary != nil {
 			h.journal.SetSecrets(d.ID, snap.Summary.Snapshot.APIKey)
 		}
+		if snap.Facts != nil {
+			h.journal.SetSecrets(d.ID, snap.Facts.Snapshot.APIKey)
+		}
 		h.log(r, "backend", "config_read", "success", d.ID, "", time.Since(started), "", "")
 		h.log(r, "backend", "dialog_created", "success", d.ID, "", time.Since(started), "", "")
 		h.ok(w, dialogDTO(d))
@@ -254,30 +294,40 @@ func (h *Handler) dialogs(w http.ResponseWriter, r *http.Request, sid string) {
 		method(w, http.MethodGet, http.MethodPost)
 	}
 }
+
+func (h *Handler) contextStrategies(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		method(w, http.MethodGet)
+		return
+	}
+	snapshot, err := h.loadSnapshot()
+	if err != nil {
+		h.ok(w, map[string]any{"strategies": []map[string]any{
+			{"id": agent.StrategySlidingWindow, "available": true},
+			{"id": agent.StrategyFacts, "available": false, "reason": "Facts временно недоступен."},
+			{"id": agent.StrategyBranching, "available": true},
+			{"id": agent.StrategySummary, "available": false, "reason": "Summary временно недоступен."},
+		}})
+		return
+	}
+	strategies := []map[string]any{
+		{"id": agent.StrategySlidingWindow, "available": true},
+		{"id": agent.StrategyFacts, "available": snapshot.Facts != nil},
+		{"id": agent.StrategyBranching, "available": true},
+		{"id": agent.StrategySummary, "available": snapshot.Summary != nil},
+	}
+	for i := range strategies {
+		if available, _ := strategies[i]["available"].(bool); !available {
+			strategies[i]["reason"] = "Стратегия временно недоступна."
+		}
+	}
+	h.ok(w, map[string]any{"strategies": strategies})
+}
 func (h *Handler) dialog(w http.ResponseWriter, r *http.Request, sid, id string) {
 	switch r.Method {
 	case http.MethodPatch:
-		var payload struct {
-			Enabled *bool `json:"enabled"`
-		}
-		if !decode(w, r, &payload) || payload.Enabled == nil {
-			h.fail(w, 400, "validation")
-			return
-		}
-		store, ok := h.store.(interface {
-			SetCompression(context.Context, string, string, bool) (session.Dialog, error)
-		})
-		if !ok {
-			h.fail(w, 503, "config")
-			return
-		}
-		d, err := store.SetCompression(r.Context(), sid, id, *payload.Enabled)
-		if err != nil {
-			h.sendError(w, err)
-			return
-		}
-		h.log(r, "backend", "compression_changed", "success", id, "", 0, "", "")
-		h.ok(w, dialogDTO(d))
+		// The former compression toggle cannot change the immutable strategy.
+		h.fail(w, http.StatusBadRequest, "validation")
 	case http.MethodGet:
 		d, ok := h.store.Get(sid, id)
 		if !ok {
@@ -319,6 +369,86 @@ func (h *Handler) selectDialog(w http.ResponseWriter, r *http.Request, sid, id s
 	}
 	h.log(r, "backend", "dialog_selected", "success", id, "", 0, "", "")
 	w.WriteHeader(204)
+}
+
+func (h *Handler) strategy(w http.ResponseWriter, r *http.Request, sid, id string) {
+	if r.Method != http.MethodPatch {
+		method(w, http.MethodPatch)
+		return
+	}
+	var payload struct {
+		ContextStrategy agent.ContextStrategy `json:"context_strategy"`
+	}
+	if !decode(w, r, &payload) || !payload.ContextStrategy.Valid() {
+		h.fail(w, http.StatusBadRequest, "validation")
+		return
+	}
+	store, ok := h.store.(interface {
+		UpdateStrategy(context.Context, string, string, agent.ContextStrategy) (session.Dialog, error)
+	})
+	if !ok {
+		h.fail(w, http.StatusServiceUnavailable, "config")
+		return
+	}
+	d, err := store.UpdateStrategy(r.Context(), sid, id, payload.ContextStrategy)
+	if err != nil {
+		h.sendError(w, err)
+		return
+	}
+	h.log(r, "backend", "context_strategy_selected", "success", id, "", 0, "", "")
+	h.ok(w, dialogDTO(d))
+}
+
+func (h *Handler) branches(w http.ResponseWriter, r *http.Request, sid, id string) {
+	if r.Method != http.MethodPost {
+		method(w, http.MethodPost)
+		return
+	}
+	var payload struct{}
+	if !decode(w, r, &payload) {
+		h.fail(w, http.StatusBadRequest, "validation")
+		return
+	}
+	store, ok := h.store.(interface {
+		AddBranch(context.Context, string, string) (session.Dialog, error)
+	})
+	if !ok {
+		h.fail(w, http.StatusServiceUnavailable, "config")
+		return
+	}
+	d, err := store.AddBranch(r.Context(), sid, id)
+	if err != nil {
+		h.sendError(w, err)
+		return
+	}
+	h.log(r, "backend", "branch_created", "success", id, "", 0, "", "")
+	h.ok(w, dialogDTO(d))
+}
+
+func (h *Handler) selectBranch(w http.ResponseWriter, r *http.Request, sid, id, branchID string) {
+	if r.Method != http.MethodPost {
+		method(w, http.MethodPost)
+		return
+	}
+	var payload struct{}
+	if !decode(w, r, &payload) {
+		h.fail(w, http.StatusBadRequest, "validation")
+		return
+	}
+	store, ok := h.store.(interface {
+		SelectBranch(context.Context, string, string, string) (session.Dialog, error)
+	})
+	if !ok {
+		h.fail(w, http.StatusServiceUnavailable, "config")
+		return
+	}
+	d, err := store.SelectBranch(r.Context(), sid, id, branchID)
+	if err != nil {
+		h.sendError(w, err)
+		return
+	}
+	h.log(r, "backend", "branch_selected", "success", id, "", 0, "", "")
+	h.ok(w, dialogDTO(d))
 }
 
 type sendRequest struct {
@@ -460,7 +590,13 @@ func (h *Handler) admin(w http.ResponseWriter, r *http.Request) {
 	h.ok(w, map[string]any{"found": found, "log_text_payloads": h.journal.LogTextPayloads(), "logs": logs})
 }
 func (h *Handler) log(r *http.Request, source, event, result, did, mid string, d time.Duration, category, text string) {
-	h.logContext(r.Context(), source, event, result, did, mid, d, category, text)
+	branchID := ""
+	if did != "" {
+		if dialog, ok := h.store.Get(r.Header.Get("X-Session-ID"), did); ok {
+			branchID = dialog.ActiveBranchID
+		}
+	}
+	h.journal.Log(observability.Record{Source: source, Event: event, Result: result, CorrelationID: llm.RequestID(r.Context()), DialogID: did, BranchID: branchID, MessageID: mid, AttemptID: llm.AttemptID(r.Context()), DurationMS: d.Milliseconds(), ErrorCategory: category, Text: text}, "")
 }
 func (h *Handler) logContext(ctx context.Context, source, event, result, did, mid string, d time.Duration, category, text string) {
 	h.journal.Log(observability.Record{Source: source, Event: event, Result: result, CorrelationID: llm.RequestID(ctx), DialogID: did, MessageID: mid, AttemptID: llm.AttemptID(ctx), DurationMS: d.Milliseconds(), ErrorCategory: category, Text: text}, "")
@@ -497,6 +633,7 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
 	d := json.NewDecoder(r.Body)
+	d.DisallowUnknownFields()
 	if d.Decode(v) != nil {
 		return false
 	}
@@ -514,18 +651,24 @@ type messageDTO struct {
 	ErrorCategory   string       `json:"error_category,omitempty"`
 }
 type dialogDTOType struct {
-	Compression     agent.CompressionState `json:"compression"`
-	AccountedTokens int64                  `json:"accounted_tokens"`
-	ID              string                 `json:"id"`
-	Title           string                 `json:"title"`
-	TitleStatus     string                 `json:"title_status"`
-	CreatedAt       time.Time              `json:"created_at"`
-	UpdatedAt       time.Time              `json:"updated_at"`
-	Messages        []messageDTO           `json:"messages"`
+	Compression       agent.CompressionState `json:"compression"`
+	AccountedTokens   int64                  `json:"accounted_tokens"`
+	ID                string                 `json:"id"`
+	Title             string                 `json:"title"`
+	TitleStatus       string                 `json:"title_status"`
+	CreatedAt         time.Time              `json:"created_at"`
+	UpdatedAt         time.Time              `json:"updated_at"`
+	Messages          []messageDTO           `json:"messages"`
+	ContextStrategy   agent.ContextStrategy  `json:"context_strategy"`
+	Facts             map[string]string      `json:"facts"`
+	FactsTokens       int64                  `json:"facts_tokens"`
+	FactsUsageMissing bool                   `json:"facts_usage_missing"`
+	ActiveBranchID    string                 `json:"active_branch_id,omitempty"`
+	Branches          []session.Branch       `json:"branches,omitempty"`
 }
 
 func dialogDTO(d session.Dialog) dialogDTOType {
-	out := dialogDTOType{Compression: d.Compression, ID: d.ID, Title: d.Title, TitleStatus: d.TitleStatus, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt, AccountedTokens: d.AccountedTokens, Messages: make([]messageDTO, 0, len(d.Messages))}
+	out := dialogDTOType{Compression: d.Compression, ID: d.ID, Title: d.Title, TitleStatus: d.TitleStatus, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt, AccountedTokens: d.AccountedTokens, Messages: make([]messageDTO, 0, len(d.Messages)), ContextStrategy: d.ContextStrategy, Facts: d.Facts, FactsTokens: d.FactsTokens, FactsUsageMissing: d.FactsUsageMissing, ActiveBranchID: d.ActiveBranchID, Branches: d.Branches}
 	for _, m := range d.Messages {
 		out.Messages = append(out.Messages, messageDTO{ID: m.ID, ClientMessageID: m.ClientID, Role: m.Role, Text: m.Text, Status: m.Status, CreatedAt: m.CreatedAt, ErrorCategory: m.ErrorCategory, Usage: m.Usage})
 	}

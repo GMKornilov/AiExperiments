@@ -31,9 +31,18 @@ type diskSession struct {
 }
 
 type diskDialog struct {
-	AgentMessages *[]agent.Message     `json:"agent_messages,omitempty"`
-	Dialog        Dialog               `json:"dialog"`
-	Snapshot      agent.DialogSnapshot `json:"snapshot"`
+	AgentMessages       *[]agent.Message     `json:"agent_messages,omitempty"`
+	Dialog              Dialog               `json:"dialog"`
+	Snapshot            agent.DialogSnapshot `json:"snapshot"`
+	Branches            []diskBranch         `json:"branches,omitempty"`
+	FactsReadyMessageID string               `json:"facts_ready_message_id,omitempty"`
+}
+
+type diskBranch struct {
+	Meta               Branch                 `json:"meta"`
+	Messages           []agent.Message        `json:"messages"`
+	Compression        agent.CompressionState `json:"compression"`
+	ParentMessageCount int                    `json:"parent_message_count"`
 }
 
 type diskIndex struct {
@@ -47,10 +56,12 @@ type diskIndexSession struct {
 }
 
 type diskChat struct {
-	AgentMessages *[]agent.Message     `json:"agent_messages,omitempty"`
-	Version       int                  `json:"version"`
-	Dialog        Dialog               `json:"dialog"`
-	Snapshot      agent.DialogSnapshot `json:"snapshot"`
+	AgentMessages       *[]agent.Message     `json:"agent_messages,omitempty"`
+	Version             int                  `json:"version"`
+	Dialog              Dialog               `json:"dialog"`
+	Snapshot            agent.DialogSnapshot `json:"snapshot"`
+	Branches            []diskBranch         `json:"branches,omitempty"`
+	FactsReadyMessageID string               `json:"facts_ready_message_id,omitempty"`
 }
 
 func dialogDirectory(path string) string {
@@ -109,7 +120,7 @@ func (s *Store) readState(data []byte) (diskState, error) {
 			if json.Unmarshal(body, &chat) != nil || chat.Version != 1 || chat.Dialog.ID != id {
 				return diskState{}, ErrStorage
 			}
-			saved.Dialogs = append(saved.Dialogs, diskDialog{Dialog: chat.Dialog, Snapshot: chat.Snapshot, AgentMessages: chat.AgentMessages})
+			saved.Dialogs = append(saved.Dialogs, diskDialog{Dialog: chat.Dialog, Snapshot: chat.Snapshot, AgentMessages: chat.AgentMessages, Branches: chat.Branches, FactsReadyMessageID: chat.FactsReadyMessageID})
 			s.persistedDialogs[id] = body
 		}
 		state.Sessions[sid] = saved
@@ -182,6 +193,21 @@ func OpenStore(provider agent.Provider, path string, loader func() (agent.Dialog
 				}
 				entry.Snapshot.Summary.Snapshot.APIKey = credentials.Summary.Snapshot.APIKey
 			}
+			if entry.Snapshot.Facts != nil {
+				if credentials.Facts == nil || entry.Snapshot.Facts.Snapshot.BaseURL != credentials.Facts.Snapshot.BaseURL {
+					return nil, fmt.Errorf("%w: facts credential endpoint mismatch", ErrStorage)
+				}
+				entry.Snapshot.Facts.Snapshot.APIKey = credentials.Facts.Snapshot.APIKey
+			}
+			if entry.Snapshot.ContextWindowMessages == 0 {
+				entry.Snapshot.ContextWindowMessages = 10
+			}
+			if entry.Dialog.ContextWindowMessages == 0 {
+				entry.Dialog.ContextWindowMessages = entry.Snapshot.ContextWindowMessages
+			}
+			if entry.Dialog.ContextStrategy == "" {
+				entry.Dialog.ContextStrategy = agent.StrategySummary
+			}
 			if entry.Snapshot.Chat.Model == credentials.Chat.Model {
 				entry.Snapshot.Chat.ContextWindowTokens = credentials.Chat.ContextWindowTokens
 			}
@@ -191,16 +217,16 @@ func OpenStore(provider agent.Provider, path string, loader func() (agent.Dialog
 				return nil, ErrStorage
 			}
 			ids[entry.Dialog.ID] = true
+			if !entry.Dialog.ContextStrategy.Valid() {
+				return nil, fmt.Errorf("%w: invalid context strategy", ErrStorage)
+			}
 			messages := entry.Dialog.Messages
 			if entry.AgentMessages != nil {
 				messages = *entry.AgentMessages
 			}
-			conversation, err := agent.RestoreCompactedConversation(entry.Snapshot.Chat, messages, entry.Dialog.Compression)
+			conversation, err := restoreConversation(entry.Snapshot, messages, entry.Dialog.Compression, entry.Dialog.ContextStrategy)
 			if err != nil {
 				return nil, fmt.Errorf("%w: invalid conversation", ErrStorage)
-			}
-			if err := conversation.ConfigureCompression(entry.Snapshot.Summary, entry.Dialog.Compression); err != nil {
-				return nil, fmt.Errorf("%w: invalid summary", ErrStorage)
 			}
 			switch entry.Dialog.TitleStatus {
 			case "pending":
@@ -209,7 +235,36 @@ func OpenStore(provider agent.Provider, path string, loader func() (agent.Dialog
 			default:
 				return nil, ErrStorage
 			}
-			browser.dialogs[entry.Dialog.ID] = &storedDialog{dialog: entry.Dialog, agent: conversation, textSnapshot: entry.Snapshot.Text}
+			stored := &storedDialog{dialog: entry.Dialog, agent: conversation, textSnapshot: entry.Snapshot.Text, factsReadyMessageID: entry.FactsReadyMessageID}
+			if entry.Snapshot.Facts != nil {
+				facts := entry.Snapshot.Facts.Snapshot
+				stored.factsSnapshot = &facts
+			}
+			if entry.Dialog.ContextStrategy == agent.StrategyBranching {
+				if entry.Dialog.ActiveBranchID == "" || len(entry.Branches) == 0 {
+					return nil, fmt.Errorf("%w: missing branches", ErrStorage)
+				}
+				stored.branches = make(map[string]*storedBranch, len(entry.Branches))
+				for _, diskBranch := range entry.Branches {
+					if !validDialogID(diskBranch.Meta.ID) || diskBranch.Meta.ID == "" || diskBranch.ParentMessageCount < 0 || stored.branches[diskBranch.Meta.ID] != nil {
+						return nil, fmt.Errorf("%w: invalid branch", ErrStorage)
+					}
+					branchConversation, branchErr := restoreConversation(entry.Snapshot, diskBranch.Messages, diskBranch.Compression, agent.StrategyBranching)
+					if branchErr != nil || diskBranch.ParentMessageCount > len(diskBranch.Messages) {
+						return nil, fmt.Errorf("%w: invalid branch", ErrStorage)
+					}
+					if diskBranch.Meta.ParentBranchID != "" {
+						branchConversation.SetBranchSuffix(diskBranch.Meta.ID[:8])
+					}
+					stored.branches[diskBranch.Meta.ID] = &storedBranch{meta: diskBranch.Meta, agent: branchConversation, parentMessageCount: diskBranch.ParentMessageCount}
+				}
+				stored.activeBranch = entry.Dialog.ActiveBranchID
+				if stored.branches[stored.activeBranch] == nil {
+					return nil, fmt.Errorf("%w: active branch", ErrStorage)
+				}
+				stored.agent = stored.branches[stored.activeBranch].agent
+			}
+			browser.dialogs[entry.Dialog.ID] = stored
 		}
 		if browser.selected != "" && browser.dialogs[browser.selected] == nil {
 			return nil, ErrStorage
@@ -223,6 +278,20 @@ func OpenStore(provider agent.Provider, path string, loader func() (agent.Dialog
 		return nil, ErrStorage
 	}
 	return s, nil
+}
+
+func restoreConversation(snapshot agent.DialogSnapshot, messages []agent.Message, state agent.CompressionState, strategy agent.ContextStrategy) (*agent.Conversation, error) {
+	conversation, err := agent.RestoreCompactedConversation(snapshot.Chat, messages, state)
+	if err != nil {
+		return nil, err
+	}
+	if err := conversation.ConfigureContext(strategy, snapshot.ContextWindowMessages); err != nil {
+		return nil, err
+	}
+	if err := conversation.ConfigureCompression(snapshot.Summary, state); err != nil {
+		return nil, err
+	}
+	return conversation, nil
 }
 
 // StorageError reports a write failure; a failed store stays unavailable until restart.
@@ -241,6 +310,9 @@ func (s *Store) RegisterSecrets(register func(string, ...string)) {
 			register(id, dialog.agent.Snapshot().APIKey, dialog.textSnapshot.APIKey)
 			if cfg := dialog.agent.SummaryConfig(); cfg != nil {
 				register(id, cfg.Snapshot.APIKey)
+			}
+			if cfg := dialog.dialogFactsConfig(); cfg != nil {
+				register(id, cfg.APIKey)
 			}
 		}
 	}
@@ -282,7 +354,19 @@ func (s *Store) writeStateLocked() error {
 					break
 				}
 			}
-			chat := diskChat{AgentMessages: &tail, Version: 1, Dialog: public, Snapshot: agent.DialogSnapshot{Chat: dialog.agent.Snapshot(), Text: dialog.textSnapshot, Summary: dialog.agent.SummaryConfig()}}
+			snapshot := agent.DialogSnapshot{Chat: dialog.agent.Snapshot(), Text: dialog.textSnapshot, Summary: dialog.agent.SummaryConfig(), ContextWindowMessages: public.ContextWindowMessages}
+			if facts := dialog.dialogFactsConfig(); facts != nil {
+				snapshot.Facts = &agent.FactsConfig{Snapshot: *facts}
+			}
+			chat := diskChat{AgentMessages: &tail, Version: 1, Dialog: public, Snapshot: snapshot, FactsReadyMessageID: dialog.factsReadyMessageID}
+			if dialog.dialog.ContextStrategy == agent.StrategyBranching {
+				chat.AgentMessages = nil
+				chat.Branches = make([]diskBranch, 0, len(dialog.branches))
+				for _, branch := range dialog.branches {
+					messages, compression := branch.agent.Memory()
+					chat.Branches = append(chat.Branches, diskBranch{Meta: branch.meta, Messages: messages, Compression: compression, ParentMessageCount: branch.parentMessageCount})
+				}
+			}
 			data, err := json.MarshalIndent(chat, "", "  ")
 			if err != nil {
 				return err

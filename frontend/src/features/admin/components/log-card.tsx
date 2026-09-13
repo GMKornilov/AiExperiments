@@ -6,7 +6,7 @@ export function formatPayload(text: string) {
 }
 
 export function LogCard({ log }: { log: AdminLog }) {
-  const labels = { chat: "Ответ агента", title: "Название", summary: "Суммаризация" };
+  const labels = { chat: "Ответ агента", title: "Название", summary: "Суммаризация", facts: "Facts" };
   const title = log.event === "llm_request" ? "Запрос → LLM" : log.event === "llm_response" ? "Ответ ← LLM" : log.event;
   return <article className={styles.card} data-result={log.result}>
     <header className={styles.cardHeader}>

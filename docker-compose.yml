@@ -8,6 +8,7 @@ services:
       - ./backend/prompts/barista-system.txt:/app/prompts/barista-system.txt:ro
       - ./backend/prompts/chat-title-system.txt:/app/prompts/chat-title-system.txt:ro
       - ./backend/prompts/history-summary-system.txt:/app/prompts/history-summary-system.txt:ro
+      - ./backend/prompts/facts-system.txt:/app/prompts/facts-system.txt:ro
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/healthz"]
       interval: 10s

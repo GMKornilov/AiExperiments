@@ -24,14 +24,19 @@ type BackendConfig struct {
 }
 
 type LLMConfig struct {
-	Chat    LLMEndpoint    `yaml:"chat"`
-	Text    LLMEndpoint    `yaml:"text"`
-	Summary *SummaryConfig `yaml:"summary"`
+	Chat                  LLMEndpoint    `yaml:"chat"`
+	Text                  LLMEndpoint    `yaml:"text"`
+	Summary               *SummaryConfig `yaml:"summary"`
+	Facts                 *FactsConfig   `yaml:"facts"`
+	ContextWindowMessages int            `yaml:"context_window_messages"`
 }
 type SummaryConfig struct {
 	Endpoint         LLMEndpoint `yaml:",inline"`
 	KeepLastMessages int         `yaml:"keep_last_messages"`
 	BatchSize        int         `yaml:"batch_size"`
+}
+type FactsConfig struct {
+	Endpoint LLMEndpoint `yaml:",inline"`
 }
 type LLMEndpoint struct {
 	ContextWindowTokens int64         `yaml:"context_window_tokens"`
@@ -88,6 +93,12 @@ func LoadLLM(path string) (LLMConfig, error) {
 	if raw["chat"] == nil || raw["text"] == nil {
 		return LLMConfig{}, fmt.Errorf("chat и text обязательны")
 	}
+	if raw["context_window_messages"] == nil {
+		cfg.ContextWindowMessages = 10
+	}
+	if cfg.ContextWindowMessages < 1 {
+		return LLMConfig{}, fmt.Errorf("context_window_messages должен быть положительным")
+	}
 	if err := loadEndpoint(&cfg.Chat, filepath.Dir(path), raw["chat"]); err != nil {
 		return LLMConfig{}, fmt.Errorf("chat: %w", err)
 	}
@@ -107,6 +118,11 @@ func LoadLLM(path string) (LLMConfig, error) {
 		}
 		if cfg.Summary.KeepLastMessages < 1 || cfg.Summary.BatchSize < 1 {
 			return LLMConfig{}, fmt.Errorf("summary: keep_last_messages и batch_size должны быть положительными")
+		}
+	}
+	if cfg.Facts != nil {
+		if err := loadEndpoint(&cfg.Facts.Endpoint, filepath.Dir(path), raw["facts"]); err != nil {
+			return LLMConfig{}, fmt.Errorf("facts: %w", err)
 		}
 	}
 	return cfg, nil

@@ -36,8 +36,15 @@ type CompressionState struct {
 func (c *Conversation) ConfigureCompression(cfg *SummaryConfig, state CompressionState) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if state.CoveredMessages < 0 || state.PrunedMessages < 0 || state.PrunedMessages > state.CoveredMessages || state.CoveredMessages-state.PrunedMessages > len(c.messages) || state.ArchivedTokens < 0 || state.ArchivedTokens > llm.MaxSafeTokens-AccountedTokens(c.messages) || (state.CoveredMessages > 0 && state.Summary == "") || state.SummaryTokens < 0 || state.SummaryTokens > llm.MaxSafeTokens || state.FullEstimate < 0 || state.SentEstimate < 0 || (state.LastInputTokens != nil && (*state.LastInputTokens < 0 || *state.LastInputTokens > llm.MaxSafeTokens)) {
+	summaryMode := c.strategy == StrategySummary || c.strategy == ""
+	if state.CoveredMessages < 0 || state.PrunedMessages < 0 || state.ArchivedTokens < 0 || state.ArchivedTokens > llm.MaxSafeTokens-AccountedTokens(c.messages) || state.SummaryTokens < 0 || state.SummaryTokens > llm.MaxSafeTokens || state.FullEstimate < 0 || state.SentEstimate < 0 || (state.LastInputTokens != nil && (*state.LastInputTokens < 0 || *state.LastInputTokens > llm.MaxSafeTokens)) {
 		return fmt.Errorf("некорректное состояние summary")
+	}
+	if summaryMode && (state.PrunedMessages > state.CoveredMessages || state.CoveredMessages-state.PrunedMessages > len(c.messages) || (state.CoveredMessages > 0 && state.Summary == "")) {
+		return fmt.Errorf("некорректное состояние summary")
+	}
+	if !summaryMode && (state.Enabled || state.Summary != "" || state.CoveredMessages != 0) {
+		return fmt.Errorf("некорректное состояние контекста")
 	}
 	if cfg == nil && (state.Enabled || state.Summary != "" || state.CoveredMessages > 0) {
 		return fmt.Errorf("отсутствуют настройки summary")
@@ -46,10 +53,12 @@ func (c *Conversation) ConfigureCompression(cfg *SummaryConfig, state Compressio
 		copied := *cfg
 		c.summaryConfig = &copied
 	}
-	state.Available = cfg != nil
+	state.Available = cfg != nil && summaryMode
 	state.ContextWindowTokens = c.snapshot.ContextWindowTokens
 	c.compression = state
-	c.pruneLocked(state.CoveredMessages - state.PrunedMessages)
+	if summaryMode {
+		c.pruneLocked(state.CoveredMessages - state.PrunedMessages)
+	}
 	return nil
 }
 
@@ -77,10 +86,12 @@ func (c *Conversation) Compression() CompressionState {
 func (c *Conversation) SetCompression(enabled bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if enabled && c.summaryConfig == nil {
+	summaryMode := c.strategy == StrategySummary || c.strategy == ""
+	if enabled && (!summaryMode || c.summaryConfig == nil) {
 		return fmt.Errorf("суммаризация не настроена")
 	}
 	c.compression.Enabled = enabled
+	c.compression.Available = enabled && c.summaryConfig != nil && summaryMode
 	return nil
 }
 

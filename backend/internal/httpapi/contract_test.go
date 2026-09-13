@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -96,7 +97,8 @@ func TestHTTPConversationContract(t *testing.T) {
 				t.Fatalf("context=%#v", history)
 			}
 			writeFixture(t, cfg, "bad: [")
-			request := httptest.NewRequest(http.MethodPost, "/api/dialogs", nil)
+			request := httptest.NewRequest(http.MethodPost, "/api/dialogs", strings.NewReader(`{"context_strategy":"sliding_window"}`))
+			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("X-Session-ID", "a")
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, request)
@@ -250,7 +252,8 @@ func nestedConfig(url, key, model, prompt string) string {
 }
 func createDialog(t *testing.T, h http.Handler, sid string) string {
 	t.Helper()
-	r := httptest.NewRequest(http.MethodPost, "/api/dialogs", nil)
+	r := httptest.NewRequest(http.MethodPost, "/api/dialogs", strings.NewReader(`{"context_strategy":"sliding_window"}`))
+	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("X-Session-ID", sid)
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)

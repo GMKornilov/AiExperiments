@@ -1,12 +1,10 @@
 import { test, expect } from "@playwright/test";
 
-test("compression switches context, persists after reload, and displays actual input", async ({ page }) => {
+test("Summary auto-compresses, persists after reload, and displays actual input", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "Новый диалог", exact: true }).click();
-  const toggle = page.getByRole("switch", { name: /Сжатие истории/ });
-  await expect(toggle).toBeEnabled();
-  await toggle.click();
-  await expect(toggle).toBeChecked();
+  await page.getByRole("button", { name: /новый диалог/i }).first().click();
+  await page.getByTestId("strategy-card-summary").click();
+  await expect(page.getByTestId("context-strategy-status")).toContainText("Summary");
   const send = async (text) => {
     await page.getByRole("textbox").fill(text);
     const response = page.waitForResponse(r => r.url().endsWith("/messages") && r.request().method() === "POST");
@@ -34,17 +32,10 @@ test("compression switches context, persists after reload, and displays actual i
   await expect(meter).toHaveAttribute("aria-valuenow", String(compressed.compression.last_input_tokens));
   await expect(meter).toHaveAttribute("aria-valuemax", "1000");
   await page.reload();
-  await expect(toggle).toBeChecked();
+  await expect(page.getByTestId("context-strategy-status")).toContainText("Summary");
   await expect(page.getByText(/^Кофе без молока, доза 18 г[.]/)).toBeVisible();
   await page.getByText("Посмотреть summary", { exact: true }).click();
   await expect(page.getByText("Пользователь предпочитает кофе без молока; доза 18 г.", { exact: true })).toBeVisible();
-  await toggle.click();
-  await expect(toggle).not.toBeChecked();
-  const full = await send("Повтори мои предпочтения.");
-  expect(full.compression.enabled).toBe(false);
-  expect(full.compression.full_estimate).toBe(full.compression.sent_estimate);
-  expect(full.messages).toHaveLength(8);
-  await expect(meter).toHaveAttribute("aria-valuenow", String(full.compression.last_input_tokens));
   await page.screenshot({ path: "test-results/compression-desktop.png", fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(meter).toBeVisible();

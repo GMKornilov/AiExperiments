@@ -11,6 +11,25 @@ createServer(async (request, response) => {
   try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { response.writeHead(400).end(); return; }
   const text = body?.messages?.at(-1)?.content;
   if (typeof text !== "string") { response.writeHead(400).end(); return; }
+  if (body.model === "e2e-facts-model") {
+    if (text.includes("facts-error")) { response.writeHead(503).end("controlled facts failure"); return; }
+    if (text.includes("facts-invalid")) {
+      response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({
+        choices: [{ message: { content: "[]" } }], usage: { prompt_tokens: 7, completion_tokens: 3 },
+      }));
+      return;
+    }
+    let latest = "";
+    try {
+      const payload = JSON.parse(text);
+      latest = [...(payload.messages ?? [])].reverse().find((message) => message?.role === "user")?.content ?? "";
+    } catch { response.writeHead(400).end("invalid facts payload"); return; }
+    const facts = latest.includes("доза теперь 17") ? { dose: "17 г" } : { latest_user: String(latest).slice(0, 120) };
+    response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify(facts) } }], usage: { prompt_tokens: 7, completion_tokens: 3 },
+    }));
+    return;
+  }
   if (body.model === "e2e-summary-model") {
     response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({
       choices: [{ message: { content: "Пользователь предпочитает кофе без молока; доза 18 г." } }],
