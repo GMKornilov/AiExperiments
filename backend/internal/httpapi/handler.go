@@ -96,7 +96,11 @@ func SnapshotLoader(path string) func() (agent.DialogSnapshot, error) {
 		if err != nil {
 			return agent.DialogSnapshot{}, err
 		}
-		return agent.DialogSnapshot{Chat: agent.Snapshot{BaseURL: cfg.Chat.BaseURL, APIKey: cfg.Chat.APIKey, Model: cfg.Chat.Model, SystemPrompt: cfg.Chat.SystemPrompt, Timeout: cfg.Chat.RequestTimeout, Temperature: cfg.Chat.Temperature}, Text: agent.Snapshot{BaseURL: cfg.Text.BaseURL, APIKey: cfg.Text.APIKey, Model: cfg.Text.Model, SystemPrompt: cfg.Text.SystemPrompt, Timeout: cfg.Text.RequestTimeout, Temperature: cfg.Text.Temperature}}, nil
+		snap := agent.DialogSnapshot{Chat: endpointSnapshot(cfg.Chat), Text: endpointSnapshot(cfg.Text)}
+		if cfg.Summary != nil {
+			snap.Summary = &agent.SummaryConfig{Snapshot: endpointSnapshot(cfg.Summary.Endpoint), KeepLastMessages: cfg.Summary.KeepLastMessages, BatchSize: cfg.Summary.BatchSize}
+		}
+		return snap, nil
 	}
 }
 
@@ -182,8 +186,25 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.store.Get(sessionID, dialogID); ok {
 		ownedDialogID = dialogID
 	}
+	r = r.WithContext(llm.WithTrace(r.Context(), func(ctx context.Context, trace llm.Trace) {
+		result := "success"
+		if trace.Event == "llm_request" {
+			result = "started"
+		}
+		if trace.ErrorCategory != "" {
+			result = "failure"
+		}
+		h.journal.Log(observability.Record{Source: "backend", Event: trace.Event, Result: result,
+			CorrelationID: llm.RequestID(ctx), DialogID: dialogID, AttemptID: llm.AttemptID(ctx),
+			CallID: trace.CallID, Purpose: trace.Purpose, Payload: trace.Payload, HTTPStatus: trace.HTTPStatus,
+			DurationMS: trace.DurationMS, ErrorCategory: trace.ErrorCategory, Truncated: trace.Truncated}, "")
+	}))
 	if len(parts) == 2 {
 		h.dialog(w, r, sessionID, dialogID)
+		return
+	}
+	if len(parts) == 3 && parts[2] == "compact" {
+		h.compact(w, r, sessionID, dialogID)
 		return
 	}
 	if len(parts) == 3 && parts[2] == "select" {
@@ -223,6 +244,9 @@ func (h *Handler) dialogs(w http.ResponseWriter, r *http.Request, sid string) {
 			return
 		}
 		h.journal.SetSecrets(d.ID, snap.Chat.APIKey, snap.Text.APIKey)
+		if snap.Summary != nil {
+			h.journal.SetSecrets(d.ID, snap.Summary.Snapshot.APIKey)
+		}
 		h.log(r, "backend", "config_read", "success", d.ID, "", time.Since(started), "", "")
 		h.log(r, "backend", "dialog_created", "success", d.ID, "", time.Since(started), "", "")
 		h.ok(w, dialogDTO(d))
@@ -232,6 +256,28 @@ func (h *Handler) dialogs(w http.ResponseWriter, r *http.Request, sid string) {
 }
 func (h *Handler) dialog(w http.ResponseWriter, r *http.Request, sid, id string) {
 	switch r.Method {
+	case http.MethodPatch:
+		var payload struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if !decode(w, r, &payload) || payload.Enabled == nil {
+			h.fail(w, 400, "validation")
+			return
+		}
+		store, ok := h.store.(interface {
+			SetCompression(context.Context, string, string, bool) (session.Dialog, error)
+		})
+		if !ok {
+			h.fail(w, 503, "config")
+			return
+		}
+		d, err := store.SetCompression(r.Context(), sid, id, *payload.Enabled)
+		if err != nil {
+			h.sendError(w, err)
+			return
+		}
+		h.log(r, "backend", "compression_changed", "success", id, "", 0, "", "")
+		h.ok(w, dialogDTO(d))
 	case http.MethodGet:
 		d, ok := h.store.Get(sid, id)
 		if !ok {
@@ -254,7 +300,7 @@ func (h *Handler) dialog(w http.ResponseWriter, r *http.Request, sid, id string)
 		h.journal.DeleteDialog(id)
 		w.WriteHeader(204)
 	default:
-		method(w, http.MethodGet, http.MethodDelete)
+		method(w, http.MethodGet, http.MethodDelete, http.MethodPatch)
 	}
 }
 func (h *Handler) selectDialog(w http.ResponseWriter, r *http.Request, sid, id string) {
@@ -468,17 +514,18 @@ type messageDTO struct {
 	ErrorCategory   string       `json:"error_category,omitempty"`
 }
 type dialogDTOType struct {
-	AccountedTokens int64        `json:"accounted_tokens"`
-	ID              string       `json:"id"`
-	Title           string       `json:"title"`
-	TitleStatus     string       `json:"title_status"`
-	CreatedAt       time.Time    `json:"created_at"`
-	UpdatedAt       time.Time    `json:"updated_at"`
-	Messages        []messageDTO `json:"messages"`
+	Compression     agent.CompressionState `json:"compression"`
+	AccountedTokens int64                  `json:"accounted_tokens"`
+	ID              string                 `json:"id"`
+	Title           string                 `json:"title"`
+	TitleStatus     string                 `json:"title_status"`
+	CreatedAt       time.Time              `json:"created_at"`
+	UpdatedAt       time.Time              `json:"updated_at"`
+	Messages        []messageDTO           `json:"messages"`
 }
 
 func dialogDTO(d session.Dialog) dialogDTOType {
-	out := dialogDTOType{ID: d.ID, Title: d.Title, TitleStatus: d.TitleStatus, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt, AccountedTokens: d.AccountedTokens, Messages: make([]messageDTO, 0, len(d.Messages))}
+	out := dialogDTOType{Compression: d.Compression, ID: d.ID, Title: d.Title, TitleStatus: d.TitleStatus, CreatedAt: d.CreatedAt, UpdatedAt: d.UpdatedAt, AccountedTokens: d.AccountedTokens, Messages: make([]messageDTO, 0, len(d.Messages))}
 	for _, m := range d.Messages {
 		out.Messages = append(out.Messages, messageDTO{ID: m.ID, ClientMessageID: m.ClientID, Role: m.Role, Text: m.Text, Status: m.Status, CreatedAt: m.CreatedAt, ErrorCategory: m.ErrorCategory, Usage: m.Usage})
 	}
@@ -490,4 +537,36 @@ func listingDTO(l session.Listing) map[string]any {
 		ds = append(ds, dialogDTO(d))
 	}
 	return map[string]any{"dialogs": ds, "selected_dialog_id": l.SelectedDialogID}
+}
+
+func endpointSnapshot(cfg config.LLMEndpoint) agent.Snapshot {
+	return agent.Snapshot{BaseURL: cfg.BaseURL, APIKey: cfg.APIKey, Model: cfg.Model, SystemPrompt: cfg.SystemPrompt, Timeout: cfg.RequestTimeout, Temperature: cfg.Temperature, ContextWindowTokens: cfg.ContextWindowTokens}
+}
+
+func (h *Handler) compact(w http.ResponseWriter, r *http.Request, sid, id string) {
+	if r.Method != http.MethodPost {
+		method(w, http.MethodPost)
+		return
+	}
+	store, ok := h.store.(interface {
+		Compact(context.Context, string, string) (session.Dialog, error)
+	})
+	if !ok {
+		h.fail(w, 503, "config")
+		return
+	}
+	started := time.Now()
+	h.log(r, "backend", "compact_started", "started", id, "", 0, "", "")
+	d, err := store.Compact(r.Context(), sid, id)
+	if err != nil {
+		h.log(r, "backend", "compact_finished", "failure", id, "", time.Since(started), "provider", "")
+		if d.ID != "" {
+			h.fail(w, 502, "provider")
+		} else {
+			h.sendError(w, err)
+		}
+		return
+	}
+	h.log(r, "backend", "compact_finished", "success", id, "", time.Since(started), "", "")
+	h.ok(w, dialogDTO(d))
 }

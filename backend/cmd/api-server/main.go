@@ -23,6 +23,7 @@ import (
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	logger := slog.Default()
 	started := time.Now()
 	requestID := llm.RequestID(llm.WithRequestID(context.Background(), ""))

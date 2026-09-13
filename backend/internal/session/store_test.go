@@ -144,3 +144,50 @@ func TestDeletePendingDialogReleasesSessionLockAndIgnoresLateAnswer(t *testing.T
 		t.Fatal("deleted dialog was restored")
 	}
 }
+
+func TestManualCompactPreservesTranscriptAndSessionIsolation(t *testing.T) {
+	provider := &fakeProvider{ignoreTitle: true, complete: func(context.Context) (string, error) { return "summary or answer", nil }}
+	path := t.TempDir() + "/history.json"
+	store := openTestStore(t, path, provider)
+	defer store.Close()
+	snap := testSnapshot()
+	snap.Summary = &agent.SummaryConfig{Snapshot: snap.Chat, KeepLastMessages: 1, BatchSize: 10}
+	dialog, err := store.Create("browser", snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Send(context.Background(), "browser", dialog.ID, "one", "archived original"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Compact(context.Background(), "other", dialog.ID); err == nil {
+		t.Fatal("cross-session compact allowed")
+	}
+	result, err := store.Compact(context.Background(), "browser", dialog.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Messages) != 2 || result.Messages[0].Text != "archived original" || len(store.sessions["browser"].dialogs[dialog.ID].agent.Messages()) != 0 {
+		t.Fatal("archive boundary lost")
+	}
+	store.Close()
+	snap.Chat.ContextWindowTokens = 1000000
+	store, err = OpenStore(provider, path, func() (agent.DialogSnapshot, error) { return snap, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	restored, ok := store.Get("browser", dialog.ID)
+	if !ok || restored.Compression.ContextWindowTokens != 1000000 || len(restored.Messages) != 2 || len(store.sessions["browser"].dialogs[dialog.ID].agent.Messages()) != 0 {
+		t.Fatal("manual compact lost after restart")
+	}
+	if _, err := store.Send(context.Background(), "browser", dialog.ID, "two", "new input"); err != nil {
+		t.Fatal(err)
+	}
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	for _, m := range provider.requests[len(provider.requests)-1] {
+		if m.Content == "archived original" {
+			t.Fatal("archive sent after manual compact")
+		}
+	}
+}

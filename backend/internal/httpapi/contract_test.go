@@ -106,7 +106,7 @@ func TestHTTPConversationContract(t *testing.T) {
 			sendMessage(t, h, "a", a, "c4", "still-old")
 			logs := journal.Logs(a)
 			raw, _ := json.Marshal(logs)
-			if bytes.Contains(raw, []byte("KEY-ONE")) || bytes.Contains(raw, []byte("SYSTEM SECRET-PROMPT")) {
+			if bytes.Contains(raw, []byte("KEY-ONE")) || (!logText && bytes.Contains(raw, []byte("SYSTEM SECRET-PROMPT"))) {
 				t.Fatalf("private log=%s", raw)
 			}
 			if logText && !bytes.Contains(raw, []byte("first")) {

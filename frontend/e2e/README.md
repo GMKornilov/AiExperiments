@@ -19,6 +19,10 @@ dummy credential. Set `BARISTA_E2E_URL` when using another frontend URL.
 npm run test:e2e
 ```
 
+История сжимается в тесте `compression.spec.mjs`: fixture уже содержит summary
+с N=3, batch_size=2 и окно chat=1000. Summary и usage синтетические.
+Тест проверяет переключатель, BFF, refresh, полный/сжатый контекст и мобильную ширину.
+
 Token regression and the simulated short/long/context-overflow comparison:
 
 ```sh

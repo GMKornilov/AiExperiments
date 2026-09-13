@@ -24,17 +24,24 @@ type BackendConfig struct {
 }
 
 type LLMConfig struct {
-	Chat LLMEndpoint `yaml:"chat"`
-	Text LLMEndpoint `yaml:"text"`
+	Chat    LLMEndpoint    `yaml:"chat"`
+	Text    LLMEndpoint    `yaml:"text"`
+	Summary *SummaryConfig `yaml:"summary"`
+}
+type SummaryConfig struct {
+	Endpoint         LLMEndpoint `yaml:",inline"`
+	KeepLastMessages int         `yaml:"keep_last_messages"`
+	BatchSize        int         `yaml:"batch_size"`
 }
 type LLMEndpoint struct {
-	BaseURL          string        `yaml:"base_url"`
-	APIKey           string        `yaml:"api_key"`
-	Model            string        `yaml:"model"`
-	RequestTimeout   time.Duration `yaml:"request_timeout"`
-	Temperature      float64       `yaml:"temperature"`
-	SystemPromptPath string        `yaml:"system_prompt_path"`
-	SystemPrompt     string        `yaml:"-"`
+	ContextWindowTokens int64         `yaml:"context_window_tokens"`
+	BaseURL             string        `yaml:"base_url"`
+	APIKey              string        `yaml:"api_key"`
+	Model               string        `yaml:"model"`
+	RequestTimeout      time.Duration `yaml:"request_timeout"`
+	Temperature         float64       `yaml:"temperature"`
+	SystemPromptPath    string        `yaml:"system_prompt_path"`
+	SystemPrompt        string        `yaml:"-"`
 }
 
 func LoadBackend(path string) (BackendConfig, error) {
@@ -87,10 +94,28 @@ func LoadLLM(path string) (LLMConfig, error) {
 	if err := loadEndpoint(&cfg.Text, filepath.Dir(path), raw["text"]); err != nil {
 		return LLMConfig{}, fmt.Errorf("text: %w", err)
 	}
+	if cfg.Summary != nil {
+		if err := loadEndpoint(&cfg.Summary.Endpoint, filepath.Dir(path), raw["summary"]); err != nil {
+			return LLMConfig{}, fmt.Errorf("summary: %w", err)
+		}
+		m, _ := raw["summary"].(map[string]any)
+		if m["keep_last_messages"] == nil {
+			cfg.Summary.KeepLastMessages = 10
+		}
+		if m["batch_size"] == nil {
+			cfg.Summary.BatchSize = 10
+		}
+		if cfg.Summary.KeepLastMessages < 1 || cfg.Summary.BatchSize < 1 {
+			return LLMConfig{}, fmt.Errorf("summary: keep_last_messages и batch_size должны быть положительными")
+		}
+	}
 	return cfg, nil
 }
 
 func loadEndpoint(cfg *LLMEndpoint, dir string, raw any) error {
+	if cfg.ContextWindowTokens < 0 || cfg.ContextWindowTokens > 9007199254740991 {
+		return fmt.Errorf("некорректный context_window_tokens")
+	}
 	m, _ := raw.(map[string]any)
 	if cfg.RequestTimeout == 0 && m["request_timeout"] == nil {
 		cfg.RequestTimeout = defaultRequestTimeout

@@ -4,10 +4,66 @@ import { BaristaWorkspace } from "./barista-workspace";
 
 const dialog = (messages: unknown[] = [], title_status: "idle" | "pending" | "success" | "error" = "idle") => ({ id: "dialog-123", title: "Новый диалог", title_status, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", messages, accounted_tokens: 0 });
 const json = (body: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } }));
+const compression = { available: true, enabled: false, summary: "", covered_messages: 0, summary_tokens: 0, summary_usage_missing: false, full_estimate: 0, sent_estimate: 0, last_input_tokens: null, context_window_tokens: 0 };
 
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("BaristaWorkspace", () => {
+  it("changes the switch immediately while saving and rolls back on failure", async () => {
+    const saved = { ...dialog(), compression };
+    let finish!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
+      if (init?.method === "PATCH") return new Promise<Response>(resolve => { finish = resolve; });
+      return json({ dialogs: [saved], selected_dialog_id: saved.id });
+    }));
+    render(<BaristaWorkspace />);
+    const toggle = await screen.findByRole("switch");
+    fireEvent.click(toggle);
+    expect(toggle).toBeChecked();
+    expect(toggle).toBeDisabled();
+    expect(screen.getByText("Сохраняем режим…")).toBeVisible();
+    await act(async () => { finish(new Response(JSON.stringify({ error: { category: "network", message: "failure" } }), { status: 502 })); });
+    expect(toggle).not.toBeChecked();
+    expect(toggle).toBeEnabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("Не удалось сохранить режим");
+    fireEvent.click(toggle);
+    await act(async () => { finish(new Response(JSON.stringify({ ...saved, compression: { ...compression, enabled: true } }))); });
+    expect(toggle).toBeChecked();
+    expect(toggle).toBeEnabled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText(/Сжатие включено/)).toBeVisible();
+  });
+
+  it("explains unavailable summary without pretending a request is running", async () => {
+    const saved = { ...dialog(), compression: { ...compression, available: false } };
+    const fetchMock = vi.fn().mockImplementation(() => json({ dialogs: [saved], selected_dialog_id: saved.id }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<BaristaWorkspace />);
+    const toggle = await screen.findByRole("switch");
+    expect(toggle).toBeDisabled();
+    expect(toggle).toHaveAttribute("aria-busy", "false");
+    expect(screen.getByText(/Недоступно: настройте summary/)).toBeVisible();
+    fireEvent.click(toggle);
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
+  });
+
+  it("ignores a poll started before a successful compression change", async () => {
+    const saved = { ...dialog([], "pending"), compression };
+    let reads = 0;
+    let finishPoll!: (response: Response) => void;
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
+      if (init?.method === "PATCH") return json({ ...saved, compression: { ...compression, enabled: true } });
+      if (++reads === 1) return json({ dialogs: [saved], selected_dialog_id: saved.id });
+      return new Promise<Response>(resolve => { finishPoll = resolve; });
+    }));
+    render(<BaristaWorkspace />);
+    const toggle = await screen.findByRole("switch");
+    await waitFor(() => expect(reads).toBe(2), { timeout: 3500 });
+    fireEvent.click(toggle);
+    await waitFor(() => expect(toggle).toBeEnabled());
+    await act(async () => { finishPoll(new Response(JSON.stringify({ dialogs: [saved], selected_dialog_id: saved.id }))); });
+    expect(toggle).toBeChecked();
+  });
   it("shows saved per-answer usage, confirmed zero and the backend total after reopening", async () => {
     const saved = { ...dialog([
       { id: "a1", role: "assistant", text: "Первый ответ", status: "success", created_at: "2026-01-01T00:00:00Z", usage: { prompt_tokens: 100, completion_tokens: 20 } },
@@ -182,4 +238,26 @@ describe("BaristaWorkspace", () => {
     resolveSend(new Response(JSON.stringify(dialog([{ id: "a1", role: "assistant", text: "Поздно", status: "success", created_at: "2026-01-01T00:00:01Z" }])), { headers: { "Content-Type": "application/json" } }));
     await waitFor(() => expect(screen.queryByText("Поздно")).not.toBeInTheDocument());
   });
+});
+
+it("filters slash commands, dismisses and completes them, and executes a tap without sending chat", async () => {
+  const saved = { ...dialog(), compression };
+  const fetchMock = vi.fn().mockImplementation((url: string) => url.endsWith("/compact") ? json(saved) : json({ dialogs: [saved], selected_dialog_id: saved.id }));
+  vi.stubGlobal("fetch", fetchMock);
+  render(<BaristaWorkspace />);
+  const input = await screen.findByRole("textbox");
+  fireEvent.change(input, { target: { value: "/xyz" } });
+  expect(screen.queryByRole("button", { name: /compact/ })).not.toBeInTheDocument();
+  fireEvent.change(input, { target: { value: "/c" } });
+  expect(screen.getByRole("button", { name: /compact/ })).toBeVisible();
+  fireEvent.keyDown(input, { key: "Escape" });
+  expect(screen.queryByRole("button", { name: /compact/ })).not.toBeInTheDocument();
+  fireEvent.change(input, { target: { value: "/co" } });
+  fireEvent.keyDown(input, { key: "Tab" });
+  expect(input).toHaveValue("/compact");
+  fireEvent.click(screen.getByRole("button", { name: /compact/ }));
+  await screen.findByText(/Summary обновлено/);
+  expect(input).toHaveValue("");
+  expect(fetchMock.mock.calls.filter(([url]) => url.endsWith("/compact"))).toHaveLength(1);
+  expect(fetchMock.mock.calls.some(([url]) => url.endsWith("/messages"))).toBe(false);
 });
