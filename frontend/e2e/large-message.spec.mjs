@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 
 test("14 MB prompt: paste, send intact, bounded display and context error", async ({ page }) => {
   const text = readFileSync(new URL("../../docs/deepseek-overflow-prompt.txt", import.meta.url), "utf8").trim();
-  const dialog = { id: "large", title: "Большой промпт", title_status: "success", created_at: "2026-09-11T00:00:00Z", updated_at: "2026-09-11T00:00:00Z", messages: [], accounted_tokens: 0 };
+  const dialog = { id: "large", title: "Большой промпт", title_status: "success", created_at: "2026-09-11T00:00:00Z", updated_at: "2026-09-11T00:00:00Z", messages: [], accounted_tokens: 0, context_strategy: "sliding_window", facts: {}, facts_tokens: 0, facts_usage_missing: false };
   let received = "";
   await page.route("**/api/**", async (route) => {
     if (route.request().url().endsWith("/messages")) {

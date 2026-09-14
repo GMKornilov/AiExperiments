@@ -2,10 +2,9 @@ import { test, expect } from "@playwright/test";
 
 test("slash compact works by Enter and tap, keeps transcript, and logs only summary", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "Новый диалог", exact: true }).click();
+  await page.getByRole("button", { name: /новый диалог/i }).first().click();
+  await page.getByTestId("strategy-card-summary").click();
   const input = page.getByRole("textbox");
-  const toggle = page.getByRole("switch");
-  await expect(toggle).not.toBeChecked();
   const meter = page.getByRole("region", { name: "Статистика контекста" });
   const transcript = page.getByRole("region", { name: "Переписка" });
   expect(await meter.evaluate((element) => Boolean(element.compareDocumentPosition(document.querySelector('[aria-label="Переписка"]')) & Node.DOCUMENT_POSITION_PRECEDING))).toBe(true);
@@ -40,7 +39,7 @@ test("slash compact works by Enter and tap, keeps transcript, and logs only summ
   const dialog = await response.json();
   expect(dialog.messages).toHaveLength(4);
   expect(dialog.compression.covered_messages).toBe(4);
-  expect(dialog.compression.enabled).toBe(false);
+  expect(dialog.context_strategy).toBe("summary");
   await expect(page.getByText(/^Контекст сжат:/)).toBeVisible();
   await expect(input).toHaveValue("");
   await expect(page.getByText("Первое сообщение: кофе без молока", { exact: true })).toBeVisible();

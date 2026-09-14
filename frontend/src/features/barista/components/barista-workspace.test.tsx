@@ -2,67 +2,59 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BaristaWorkspace } from "./barista-workspace";
 
-const dialog = (messages: unknown[] = [], title_status: "idle" | "pending" | "success" | "error" = "idle") => ({ id: "dialog-123", title: "Новый диалог", title_status, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", messages, accounted_tokens: 0 });
+const dialog = (messages: unknown[] = [], title_status: "idle" | "pending" | "success" | "error" = "idle") => ({ id: "dialog-123", title: "Новый диалог", title_status, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", messages, accounted_tokens: 0, context_strategy: "summary" as const });
 const json = (body: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } }));
 const compression = { available: true, enabled: false, summary: "", covered_messages: 0, summary_tokens: 0, summary_usage_missing: false, full_estimate: 0, sent_estimate: 0, last_input_tokens: null, context_window_tokens: 0 };
 
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("BaristaWorkspace", () => {
-  it("changes the switch immediately while saving and rolls back on failure", async () => {
+  it("в Summary показывает /compact без переключателя сжатия", async () => {
     const saved = { ...dialog(), compression };
-    let finish!: (response: Response) => void;
-    vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
-      if (init?.method === "PATCH") return new Promise<Response>(resolve => { finish = resolve; });
+    const fetchMock = vi.fn().mockImplementation((url: string | URL) => {
+      if (String(url).endsWith("/compact")) return json(saved);
       return json({ dialogs: [saved], selected_dialog_id: saved.id });
-    }));
-    render(<BaristaWorkspace />);
-    const toggle = await screen.findByRole("switch");
-    fireEvent.click(toggle);
-    expect(toggle).toBeChecked();
-    expect(toggle).toBeDisabled();
-    expect(screen.getByText("Сохраняем режим…")).toBeVisible();
-    await act(async () => { finish(new Response(JSON.stringify({ error: { category: "network", message: "failure" } }), { status: 502 })); });
-    expect(toggle).not.toBeChecked();
-    expect(toggle).toBeEnabled();
-    expect(screen.getByRole("alert")).toHaveTextContent("Не удалось сохранить режим");
-    fireEvent.click(toggle);
-    await act(async () => { finish(new Response(JSON.stringify({ ...saved, compression: { ...compression, enabled: true } }))); });
-    expect(toggle).toBeChecked();
-    expect(toggle).toBeEnabled();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(screen.getByText(/Сжатие включено/)).toBeVisible();
-  });
-
-  it("explains unavailable summary without pretending a request is running", async () => {
-    const saved = { ...dialog(), compression: { ...compression, available: false } };
-    const fetchMock = vi.fn().mockImplementation(() => json({ dialogs: [saved], selected_dialog_id: saved.id }));
+    });
     vi.stubGlobal("fetch", fetchMock);
     render(<BaristaWorkspace />);
-    const toggle = await screen.findByRole("switch");
-    expect(toggle).toBeDisabled();
-    expect(toggle).toHaveAttribute("aria-busy", "false");
-    expect(screen.getByText(/Недоступно: настройте summary/)).toBeVisible();
-    fireEvent.click(toggle);
-    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
+    const input = await screen.findByLabelText("Ваш вопрос");
+    fireEvent.change(input, { target: { value: "/c" } });
+    expect(screen.getByRole("button", { name: /compact/ })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /compact/ }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/compact"))).toBe(true));
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
   });
 
-  it("ignores a poll started before a successful compression change", async () => {
-    const saved = { ...dialog([], "pending"), compression };
-    let reads = 0;
-    let finishPoll!: (response: Response) => void;
-    vi.stubGlobal("fetch", vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
-      if (init?.method === "PATCH") return json({ ...saved, compression: { ...compression, enabled: true } });
-      if (++reads === 1) return json({ dialogs: [saved], selected_dialog_id: saved.id });
-      return new Promise<Response>(resolve => { finishPoll = resolve; });
-    }));
+  it("отклоняет /compact вне Summary без upstream-вызова", async () => {
+    const saved = { ...dialog(), context_strategy: "sliding_window" as const };
+    const fetchMock = vi.fn().mockResolvedValue(json({ dialogs: [saved], selected_dialog_id: saved.id }));
+    vi.stubGlobal("fetch", fetchMock);
     render(<BaristaWorkspace />);
-    const toggle = await screen.findByRole("switch");
-    await waitFor(() => expect(reads).toBe(2), { timeout: 3500 });
-    fireEvent.click(toggle);
-    await waitFor(() => expect(toggle).toBeEnabled());
-    await act(async () => { finishPoll(new Response(JSON.stringify({ dialogs: [saved], selected_dialog_id: saved.id }))); });
-    expect(toggle).toBeChecked();
+    const input = await screen.findByLabelText("Ваш вопрос");
+    fireEvent.change(input, { target: { value: "/compact" } });
+    fireEvent.click(screen.getByRole("button", { name: "Отправить" }));
+    expect(await screen.findByText("Команда /compact доступна только в режиме Summary.")).toBeVisible();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/compact") || String(url).endsWith("/messages"))).toBe(false);
+  });
+
+  it("разрешает сменить стратегию у пустого диалога", async () => {
+    const saved = dialog();
+    const changed = { ...saved, context_strategy: "facts" as const, facts: {} };
+    const fetchMock = vi.fn().mockImplementation((_url: string, init?: RequestInit) => init?.method === "PATCH" ? json(changed) : json({ dialogs: [saved], selected_dialog_id: saved.id }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<BaristaWorkspace />);
+    fireEvent.click(await screen.findByTestId("strategy-card-facts"));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("/strategy") && init?.method === "PATCH")).toBe(true));
+    expect(screen.getByTestId("context-strategy-status")).toHaveTextContent("Facts");
+  });
+
+  it("показывает Facts только для чтения", async () => {
+    const saved = { ...dialog(), context_strategy: "facts" as const, facts: { preferred_roast: "светлая" }, facts_tokens: 8, facts_usage_missing: false };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ dialogs: [saved], selected_dialog_id: saved.id })));
+    render(<BaristaWorkspace />);
+    const facts = await screen.findByTestId("facts-panel");
+    expect(facts).toHaveTextContent("preferred_roast");
+    expect(facts.querySelector("input, textarea, [contenteditable=true]")).toBeNull();
   });
   it("shows saved per-answer usage, confirmed zero and the backend total after reopening", async () => {
     const saved = { ...dialog([
@@ -75,10 +67,10 @@ describe("BaristaWorkspace", () => {
     expect(await screen.findByText("Вход: 100 токенов · Выход: 20 токенов")).toBeVisible();
     expect(screen.getByText("Вход: 0 токенов · Выход: 0 токенов")).toBeVisible();
     expect(screen.getByText("Токены: нет данных")).toBeVisible();
-    expect(screen.getByText("Учтено токенов: 150")).toBeVisible();
+    expect(screen.getByText("Chat: 150 токенов · Summary: нет данных · Всего: нет данных")).toBeVisible();
     first.unmount();
     render(<BaristaWorkspace />);
-    expect(await screen.findByText("Учтено токенов: 150")).toBeVisible();
+    expect(await screen.findByText("Chat: 150 токенов · Summary: нет данных · Всего: нет данных")).toBeVisible();
   });
 
   it("refreshes confirmed spending after a failed attempt without retrying automatically", async () => {
@@ -96,7 +88,7 @@ describe("BaristaWorkspace", () => {
     render(<BaristaWorkspace />);
     fireEvent.change(await screen.findByLabelText("Ваш вопрос"), { target: { value: "Кофе?" } });
     fireEvent.click(screen.getByRole("button", { name: "Отправить" }));
-    expect(await screen.findByText("Учтено токенов: 120")).toBeVisible();
+    expect(await screen.findByText("Chat: 120 токенов · Summary: нет данных · Всего: нет данных")).toBeVisible();
     expect(screen.getAllByText("Кофе?")).toHaveLength(1);
     expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/messages"))).toHaveLength(1);
   });
@@ -106,7 +98,7 @@ describe("BaristaWorkspace", () => {
     render(<BaristaWorkspace />);
     expect(await screen.findByText("Контекст диалога превышает лимит модели. Начните новый диалог.")).toBeVisible();
     expect(screen.getByLabelText("Ваш вопрос")).toBeDisabled();
-    expect(screen.getByText("Учтено токенов: 0")).toBeVisible();
+    expect(screen.getByText("Chat: 0 токенов · Summary: нет данных · Всего: нет данных")).toBeVisible();
     expect(screen.getByText("Начните новый диалог: повторная отправка сохранит тот же контекст.")).toBeVisible();
     expect(screen.queryByText("Повторите ошибочную отправку, чтобы продолжить диалог.")).not.toBeInTheDocument();
   });

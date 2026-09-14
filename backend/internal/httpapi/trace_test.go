@@ -42,7 +42,6 @@ func TestJournalCapturesChatTitleAndSummary(t *testing.T) {
 			t.Fatalf("HTTP %d: %s", w.Code, w.Body.String())
 		}
 	}
-	request("PATCH", "/api/dialogs/"+d.ID, `{"enabled":true}`)
 	for i := 0; i < 2; i++ {
 		request("POST", "/api/dialogs/"+d.ID+"/messages", fmt.Sprintf(`{"client_message_id":"c%d","text":"question"}`, i))
 	}

@@ -41,8 +41,8 @@ func TestOldDialogReceivesSummaryConfigurationOnRestart(t *testing.T) {
 	}
 	defer after.Close()
 	restored, ok := after.Get("browser", d.ID)
-	if !ok || !restored.Compression.Available || restored.Compression.Enabled {
-		t.Fatal("legacy dialog remains unavailable or enabled itself")
+	if !ok || restored.Compression.Available || restored.Compression.Enabled {
+		t.Fatal("старая стратегия не должна стать Summary после перезапуска")
 	}
 	restoredJSON, err := json.Marshal(restored.Messages)
 	if err != nil {
@@ -58,9 +58,8 @@ func TestOldDialogReceivesSummaryConfigurationOnRestart(t *testing.T) {
 	if after.sessions["browser"].dialogs[d.ID].agent.Snapshot().SystemPrompt != original.Chat.SystemPrompt {
 		t.Fatal("migration altered chat prompt")
 	}
-	enabled, err := after.SetCompression(context.Background(), "browser", d.ID, true)
-	if err != nil || !enabled.Compression.Enabled {
-		t.Fatalf("old dialog cannot enable compression: %v", err)
+	if _, err := after.SetCompression(context.Background(), "browser", d.ID, true); err == nil {
+		t.Fatal("нельзя включить Summary у начатого диалога другой стратегии")
 	}
 }
 

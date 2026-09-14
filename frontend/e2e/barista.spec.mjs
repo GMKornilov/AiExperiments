@@ -4,9 +4,13 @@ const unique = (prefix) => `${prefix}-${Date.now()}-${Math.random().toString(36)
 
 async function createDialog(page) {
   await page.goto("/");
+  if ((page.viewportSize()?.width ?? 1440) < 700) {
+    await page.getByRole("button", { name: "Диалоги" }).click();
+  }
   await page.getByRole("button", { name: /новый диалог/i }).first().click();
+  await page.getByTestId("strategy-card-sliding_window").click();
   await expect(page.getByLabel("Ваш вопрос")).toBeVisible();
-  return (await page.locator("main").getByText(/^ID:/).first().textContent()).replace("ID: ", "").trim();
+  return (await page.getByRole("region", { name: "Статус диалога" }).locator("code").textContent()).trim();
 }
 
 async function sendAndSettle(page, text) {
@@ -23,7 +27,7 @@ test("empty, create, send, copy, long overflow and refresh", async ({ page }) =>
   await createDialog(page);
   const copyID = page.getByRole("button", { name: "Копировать ID чата" });
   await expect(copyID).toBeVisible();
-  const id = await page.locator("main").getByText(/^ID:/).first().textContent();
+  const id = await page.getByRole("region", { name: "Статус диалога" }).locator("code").textContent();
   await copyID.click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe((id ?? "").replace("ID: ", "").trim());
   const question = `${unique("overflow")} ${"длинный-текст ".repeat(250)}`;
@@ -74,7 +78,10 @@ test("two browser sessions are isolated and admin polling does not append rows",
   await page.goto("/admin");
   await page.getByLabel("ID диалога").fill(dialogID);
   await page.getByRole("button", { name: "Найти" }).click();
-  await expect(page.getByText("Frontend / BFF")).toBeVisible();
+  await page.getByRole("checkbox", { name: "Только LLM" }).uncheck();
+  await expect(page.locator("ol li").first()).toBeVisible();
+  const lookup = await (await page.request.get(`/api/admin/logs?dialog_id=${dialogID}&action=lookup`)).json();
+  expect(lookup.logs.some((entry) => entry.source === "frontend" && entry.event === "bff_request_completed")).toBeTruthy();
   await page.waitForTimeout(5500);
   const baseline = await page.locator("ol li").count();
   await page.waitForTimeout(5500);

@@ -1,0 +1,1 @@
+Extract only confirmed user facts from JSON data. Return one flat JSON object with string keys and values.

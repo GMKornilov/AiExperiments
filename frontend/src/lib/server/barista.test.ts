@@ -4,6 +4,7 @@ import { createDialog, listDialogs, sendMessage } from "./barista";
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
 const dialog = { id: "d", title: "Новый диалог", title_status: "idle", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", messages: [], accounted_tokens: 0 };
+const createRequest = (init: RequestInit = {}) => new Request("http://web/api/dialogs", { ...init, method: "POST", headers: { "content-type": "application/json", ...(init.headers ?? {}) }, body: JSON.stringify({ context_strategy: "summary" }) });
 
 describe("barista BFF", () => {
   it("forwards a 14 MB prompt unchanged", async () => {
@@ -23,7 +24,7 @@ describe("barista BFF", () => {
       { id: "a", role: "assistant", text: "Ответ", status: "success", created_at: dialog.created_at, usage },
     ] };
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(saved)));
-    const result = await createDialog(new Request("http://web/api/dialogs", { method: "POST" }));
+    const result = await createDialog(createRequest());
     const body = await result.json();
     expect(result.status).toBe(200);
     expect(body.accounted_tokens).toBe(120);
@@ -33,7 +34,7 @@ describe("barista BFF", () => {
 
   it.each([undefined, null, {}, { prompt_tokens: -1, completion_tokens: 20 }, { prompt_tokens: 1.5, completion_tokens: 20 }, { prompt_tokens: 1, completion_tokens: "20" }, { prompt_tokens: Number.MAX_SAFE_INTEGER, completion_tokens: 1 }])("keeps a valid answer without unconfirmed usage %j", async (usage) => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ ...dialog, messages: [{ id: "a", role: "assistant", text: "Ответ", status: "success", created_at: dialog.created_at, usage }] })));
-    const result = await createDialog(new Request("http://web/api/dialogs", { method: "POST" }));
+    const result = await createDialog(createRequest());
     expect(result.status).toBe(200);
     const body = await result.json();
     expect(body.messages[0].text).toBe("Ответ");
@@ -42,14 +43,14 @@ describe("barista BFF", () => {
 
   it.each([-1, 0.5, Number.MAX_SAFE_INTEGER + 1, "120", null])("rejects an invalid accounted total %j", async (accounted_tokens) => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ ...dialog, accounted_tokens })));
-    const result = await createDialog(new Request("http://web/api/dialogs", { method: "POST" }));
+    const result = await createDialog(createRequest());
     expect(result.status).toBe(502);
     expect((await result.json()).error.category).toBe("invalid_response");
   });
 
   it("preserves context_limit with safe instructions rather than provider text", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: { category: "context_limit", message: "private prompt and credential" } }, { status: 400 })));
-    const result = await createDialog(new Request("http://web/api/dialogs", { method: "POST" }));
+    const result = await createDialog(createRequest());
     expect(await result.json()).toEqual({ error: { category: "context_limit", message: "Контекст диалога превышает лимит модели. Начните новый диалог." } });
   });
 
@@ -79,7 +80,7 @@ describe("barista BFF", () => {
     expect(cookie).toMatch(/HttpOnly; SameSite=Lax/);
     const id = cookie?.match(/barista_session=([^;]+)/)?.[1];
     expect(fetchMock).toHaveBeenCalledWith(expect.any(URL), expect.objectContaining({ headers: expect.objectContaining({ "X-Session-ID": id }) }));
-    await createDialog(new Request("http://web/api/dialogs", { method: "POST", headers: { cookie: `barista_session=${id}` } }));
+    await createDialog(createRequest({ headers: { cookie: `barista_session=${id}` } }));
     expect(fetchMock.mock.calls[1][1].headers["X-Session-ID"]).toBe(id);
   });
 
@@ -91,7 +92,7 @@ describe("barista BFF", () => {
 
   it("does not expose a provider response body", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: { category: "provider", message: "credential private-answer" } }, { status: 502 })));
-    const result = await createDialog(new Request("http://web/api/dialogs", { method: "POST" }));
+    const result = await createDialog(createRequest());
     expect(await result.text()).not.toMatch(/credential|private-answer/);
   });
 
@@ -99,7 +100,7 @@ describe("barista BFF", () => {
     const timeout = vi.spyOn(AbortSignal, "timeout");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(dialog)));
     const controller = new AbortController(); controller.abort();
-    const result = await createDialog(new Request("http://web/api/dialogs", { method: "POST", signal: controller.signal }));
+    const result = await createDialog(createRequest({ signal: controller.signal }));
     expect(result.status).toBe(200); expect(timeout).toHaveBeenCalledWith(65_000);
   });
 });

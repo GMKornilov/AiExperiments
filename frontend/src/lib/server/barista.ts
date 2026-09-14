@@ -6,7 +6,8 @@ const timeoutMilliseconds = 65_000;
 const bodyTimeoutMilliseconds = 10_000;
 const sessionCookie = "barista_session";
 const errorCategories = new Set(["config", "validation", "network", "timeout", "provider", "invalid_response", "not_found", "busy", "cancelled", "storage", "context_limit"]);
-const eventNames = new Set(["dialog_created", "dialog_selected", "dialog_deleted", "dialog_id_copied", "message_sent", "message_retried", "message_copied", "dialog_validation_failed", "message_failed", "admin_lookup", "admin_refresh", "bff_request_completed", "bff_request_failed"]);
+const eventNames = new Set(["dialog_created", "dialog_selected", "dialog_deleted", "dialog_id_copied", "message_sent", "message_retried", "message_copied", "dialog_validation_failed", "message_failed", "admin_lookup", "admin_refresh", "strategy_selected", "branch_created", "branch_selected", "bff_request_completed", "bff_request_failed"]);
+const contextStrategies = new Set(["sliding_window", "facts", "branching", "summary"]);
 
 type JSONRecord = Record<string, unknown>;
 
@@ -132,10 +133,49 @@ function projectMessage(value: unknown): JSONRecord | null {
   return projected;
 }
 
+function projectFacts(value: unknown): JSONRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const facts: JSONRecord = {};
+  for (const [key, fact] of Object.entries(value)) {
+    if (!/^[a-z][a-z0-9_]*$/.test(key) || typeof fact !== "string" || !fact.trim()) return null;
+    facts[key] = fact;
+  }
+  return facts;
+}
+
+function projectBranch(value: unknown): JSONRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const branch = value as JSONRecord;
+  if (!only(branch, ["id", "name", "parent_branch_id", "checkpoint_message_id", "message_count"]) || !string(branch.id) || !string(branch.name) || !tokenCount(branch.message_count)) return null;
+  if (branch.parent_branch_id !== undefined && !string(branch.parent_branch_id)) return null;
+  if (branch.checkpoint_message_id !== undefined && !string(branch.checkpoint_message_id)) return null;
+  return branch;
+}
+
+function projectStrategies(value: unknown): JSONRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as JSONRecord;
+  if (!only(item, ["strategies"]) || !Array.isArray(item.strategies)) return null;
+  const strategies: JSONRecord[] = [];
+  for (const value of item.strategies) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const strategy = value as JSONRecord;
+    if (!only(strategy, ["id", "available", "reason"]) || typeof strategy.id !== "string" || !contextStrategies.has(strategy.id) || typeof strategy.available !== "boolean" || (strategy.reason !== undefined && !string(strategy.reason))) return null;
+    strategies.push(strategy);
+  }
+  return { strategies };
+}
+
 function projectDialog(value: unknown): JSONRecord | null {
   if (!value || typeof value !== "object") return null;
   const item = value as JSONRecord;
-  if (!only(item, ["id", "title", "title_status", "created_at", "updated_at", "messages", "accounted_tokens", "compression"]) || !string(item.id) || typeof item.title !== "string" || !["idle", "pending", "success", "error"].includes(item.title_status as string) || typeof item.created_at !== "string" || typeof item.updated_at !== "string" || !Array.isArray(item.messages) || !tokenCount(item.accounted_tokens)) return null;
+  if (!only(item, ["id", "title", "title_status", "created_at", "updated_at", "messages", "accounted_tokens", "compression", "context_strategy", "facts", "facts_tokens", "facts_usage_missing", "active_branch_id", "branches"]) || !string(item.id) || typeof item.title !== "string" || !["idle", "pending", "success", "error"].includes(item.title_status as string) || typeof item.created_at !== "string" || typeof item.updated_at !== "string" || !Array.isArray(item.messages) || !tokenCount(item.accounted_tokens)) return null;
+  if (item.context_strategy !== undefined && (typeof item.context_strategy !== "string" || !contextStrategies.has(item.context_strategy))) return null;
+  if (item.facts !== undefined && !projectFacts(item.facts)) return null;
+  if (item.facts_tokens !== undefined && !tokenCount(item.facts_tokens)) return null;
+  if (item.facts_usage_missing !== undefined && typeof item.facts_usage_missing !== "boolean") return null;
+  if (item.active_branch_id !== undefined && !string(item.active_branch_id)) return null;
+  if (item.branches !== undefined && (!Array.isArray(item.branches) || !item.branches.every(projectBranch))) return null;
   if (item.compression !== undefined) {
     const c = item.compression as JSONRecord;
     if (!c || typeof c !== "object" || Array.isArray(c) || !only(c, ["pruned_messages", "archived_tokens", "available", "enabled", "summary", "covered_messages", "summary_tokens", "summary_usage_missing", "full_estimate", "sent_estimate", "last_input_tokens", "context_window_tokens"]) || (c.pruned_messages !== undefined && !tokenCount(c.pruned_messages)) || (c.archived_tokens !== undefined && !tokenCount(c.archived_tokens)) || typeof c.available !== "boolean" || typeof c.enabled !== "boolean" || typeof c.summary !== "string" || typeof c.summary_usage_missing !== "boolean" || ![c.covered_messages, c.summary_tokens, c.full_estimate, c.sent_estimate, c.context_window_tokens].every(tokenCount) || (c.last_input_tokens !== null && !tokenCount(c.last_input_tokens))) return null;
@@ -145,6 +185,7 @@ function projectDialog(value: unknown): JSONRecord | null {
 }
 
 function projectSuccess(method: string, path: string, value: unknown): unknown | null {
+  if (path === "/api/context-strategies" && method === "GET") return projectStrategies(value);
   if (path === "/api/dialogs" && method === "GET") {
     if (!value || typeof value !== "object") return null;
     const item = value as JSONRecord;
@@ -165,9 +206,9 @@ function projectLogs(value: unknown): JSONRecord | null {
   for (const value of item.logs) {
     if (!value || typeof value !== "object") return null;
     const log = value as JSONRecord;
-    if (!only(log, ["timestamp", "source", "event", "result", "correlation_id", "dialog_id", "message_id", "duration_ms", "error_category", "text", "attempt_id", "usage", "call_id", "purpose", "payload", "http_status", "truncated"]) || typeof log.timestamp !== "string" || (log.source !== "frontend" && log.source !== "backend") || !string(log.event) || !string(log.result) || !string(log.correlation_id) || (log.dialog_id !== undefined && !string(log.dialog_id)) || (log.message_id !== undefined && !string(log.message_id)) || (log.duration_ms !== undefined && (typeof log.duration_ms !== "number" || !Number.isFinite(log.duration_ms))) || (log.error_category !== undefined && !errorCategories.has(log.error_category as string) && log.error_category !== "cancelled") || (log.text !== undefined && typeof log.text !== "string")) return null;
+    if (!only(log, ["timestamp", "source", "event", "result", "correlation_id", "dialog_id", "message_id", "branch_id", "duration_ms", "error_category", "text", "attempt_id", "usage", "call_id", "purpose", "payload", "http_status", "truncated"]) || typeof log.timestamp !== "string" || (log.source !== "frontend" && log.source !== "backend") || !string(log.event) || !string(log.result) || !string(log.correlation_id) || (log.dialog_id !== undefined && !string(log.dialog_id)) || (log.message_id !== undefined && !string(log.message_id)) || (log.branch_id !== undefined && !string(log.branch_id)) || (log.duration_ms !== undefined && (typeof log.duration_ms !== "number" || !Number.isFinite(log.duration_ms))) || (log.error_category !== undefined && !errorCategories.has(log.error_category as string) && log.error_category !== "cancelled") || (log.text !== undefined && typeof log.text !== "string")) return null;
     if ((log.attempt_id !== undefined && !string(log.attempt_id)) || (log.usage !== undefined && !projectUsage(log.usage))) return null;
-    if ((log.call_id !== undefined && !string(log.call_id)) || (log.purpose !== undefined && !["chat", "title", "summary"].includes(log.purpose as string)) || (log.payload !== undefined && typeof log.payload !== "string") || (log.http_status !== undefined && (!tokenCount(log.http_status) || log.http_status > 599)) || (log.truncated !== undefined && typeof log.truncated !== "boolean")) return null;
+    if ((log.call_id !== undefined && !string(log.call_id)) || (log.purpose !== undefined && !["chat", "title", "summary", "facts"].includes(log.purpose as string)) || (log.payload !== undefined && typeof log.payload !== "string") || (log.http_status !== undefined && (!tokenCount(log.http_status) || log.http_status > 599)) || (log.truncated !== undefined && typeof log.truncated !== "boolean")) return null;
     logs.push(log);
   }
   return { found: item.found, log_text_payloads: item.log_text_payloads, logs };
@@ -199,7 +240,12 @@ async function forward(request: Request, method: string, path: string, body?: JS
 }
 
 export async function listDialogs(request: Request): Promise<Response> { return forward(request, "GET", "/api/dialogs"); }
-export async function createDialog(request: Request): Promise<Response> { return forward(request, "POST", "/api/dialogs"); }
+export async function listContextStrategies(request: Request): Promise<Response> { return forward(request, "GET", "/api/context-strategies"); }
+export async function createDialog(request: Request): Promise<Response> {
+ const body = await readJSON(request);
+ if (!body || !only(body, ["context_strategy"]) || typeof body.context_strategy !== "string" || !contextStrategies.has(body.context_strategy)) return validationFailure(request, crypto.randomUUID());
+ return forward(request, "POST", "/api/dialogs", { context_strategy: body.context_strategy });
+}
 export async function getDialog(request: Request, id: string): Promise<Response> { return forward(request, "GET", `/api/dialogs/${encodeURIComponent(id)}`); }
 export async function deleteDialog(request: Request, id: string): Promise<Response> { return forward(request, "DELETE", `/api/dialogs/${encodeURIComponent(id)}`); }
 export async function selectDialog(request: Request, id: string): Promise<Response> { return forward(request, "POST", `/api/dialogs/${encodeURIComponent(id)}/select`); }
@@ -229,10 +275,20 @@ export async function adminLogs(request: Request): Promise<Response> {
   return forward(request, "GET", `/api/admin/logs?dialog_id=${encodeURIComponent(id)}&action=${action}`);
 }
 
-export async function setCompression(request: Request, id: string): Promise<Response> {
+export async function setStrategy(request: Request, id: string): Promise<Response> {
  const body = await readJSON(request);
- if (!body || !only(body, ["enabled"]) || typeof body.enabled !== "boolean") return validationFailure(request, crypto.randomUUID(), id);
- return forward(request, "PATCH", `/api/dialogs/${encodeURIComponent(id)}`, body);
+ if (!body || !only(body, ["context_strategy"]) || typeof body.context_strategy !== "string" || !contextStrategies.has(body.context_strategy)) return validationFailure(request, crypto.randomUUID(), id);
+ return forward(request, "PATCH", `/api/dialogs/${encodeURIComponent(id)}/strategy`, { context_strategy: body.context_strategy });
+}
+export async function createBranch(request: Request, id: string): Promise<Response> {
+ const body = await readJSON(request);
+ if (!body || !only(body, [])) return validationFailure(request, crypto.randomUUID(), id);
+ return forward(request, "POST", `/api/dialogs/${encodeURIComponent(id)}/branches`, {});
+}
+export async function selectBranch(request: Request, id: string, branchID: string): Promise<Response> {
+ const body = await readJSON(request);
+ if (!body || !only(body, [])) return validationFailure(request, crypto.randomUUID(), id);
+ return forward(request, "POST", `/api/dialogs/${encodeURIComponent(id)}/branches/${encodeURIComponent(branchID)}/select`, {});
 }
 
 export async function compactDialog(request: Request, id: string): Promise<Response> { return forward(request, "POST", `/api/dialogs/${encodeURIComponent(id)}/compact`); }

@@ -23,6 +23,18 @@ npm run test:e2e
 с N=3, batch_size=2 и окно chat=1000. Summary и usage синтетические.
 Тест проверяет переключатель, BFF, refresh, полный/сжатый контекст и мобильную ширину.
 
+Facts fixture возвращает flat JSON и usage 7/3; `facts-invalid` создаёт
+некорректный facts-ответ, а `facts-error` — 503. Это контролируемые данные,
+не измерение реальной модели.
+
+Полное сравнение запускают только после отдельного разрешения на вызовы
+провайдера. Скрипт работает через BFF, не читает ключи и сохраняет capture после
+каждого сообщения:
+
+```sh
+node frontend/e2e/context-compare.mjs --base-url http://127.0.0.1:13000 --output /private/tmp/context-compare.json
+```
+
 Token regression and the simulated short/long/context-overflow comparison:
 
 ```sh

@@ -14,6 +14,14 @@ text:
   request_timeout: 30s
   temperature: 0.2
   system_prompt_path: "prompts/chat-title-system.txt"
+context_window_messages: 10
+facts:
+  base_url: "https://api.deepseek.com/v1"
+  api_key: "replace-me"
+  model: "deepseek-v4-flash"
+  request_timeout: 30s
+  temperature: 0.2
+  system_prompt_path: "prompts/facts-system.txt"
 summary:
   base_url: "https://api.deepseek.com/v1"
   api_key: "replace-me"

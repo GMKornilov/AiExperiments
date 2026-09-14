@@ -1,4 +1,4 @@
-import type { AdminLogsResponse, APIError, Dialog, DialogList, ErrorCategory, LogEvent } from "../model/types";
+import type { AdminLogsResponse, APIError, ContextStrategy, ContextStrategyID, Dialog, DialogList, ErrorCategory, LogEvent } from "../model/types";
 
 const genericError = "Не удалось получить ответ. Повторите отправку.";
 
@@ -26,7 +26,8 @@ const json = (body: unknown): RequestInit => ({ method: "POST", headers: { "Cont
 export const baristaClient = {
   list: () => request<DialogList>("/api/dialogs"),
   get: (id: string) => request<Dialog>(`/api/dialogs/${encodeURIComponent(id)}`),
-  create: () => request<Dialog>("/api/dialogs", { method: "POST" }),
+  strategies: () => request<{ strategies: ContextStrategy[] }>("/api/context-strategies"),
+  create: (contextStrategy: ContextStrategyID) => request<Dialog>("/api/dialogs", json({ context_strategy: contextStrategy })),
   select: async (id: string) => { await request<unknown>(`/api/dialogs/${encodeURIComponent(id)}/select`, { method: "POST" }); },
   remove: async (id: string) => {
     const response = await fetch(`/api/dialogs/${encodeURIComponent(id)}`, { method: "DELETE", cache: "no-store" });
@@ -36,7 +37,9 @@ export const baristaClient = {
     }
   },
   compact: (id: string) => request<Dialog>(`/api/dialogs/${encodeURIComponent(id)}/compact`, { method: "POST" }),
-  compression: (id: string, enabled: boolean) => request<Dialog>(`/api/dialogs/${encodeURIComponent(id)}`, { ...json({ enabled }), method: "PATCH" }),
+  strategy: (id: string, contextStrategy: ContextStrategyID) => request<Dialog>(`/api/dialogs/${encodeURIComponent(id)}/strategy`, { ...json({ context_strategy: contextStrategy }), method: "PATCH" }),
+  createBranch: (id: string) => request<Dialog>(`/api/dialogs/${encodeURIComponent(id)}/branches`, json({})),
+  selectBranch: (id: string, branchID: string) => request<Dialog>(`/api/dialogs/${encodeURIComponent(id)}/branches/${encodeURIComponent(branchID)}/select`, json({})),
   send: (dialogID: string, clientMessageID: string, text: string) => request<Dialog>(`/api/dialogs/${encodeURIComponent(dialogID)}/messages`, json({ client_message_id: clientMessageID, text })),
   retry: (dialogID: string, messageID: string) => request<Dialog>(`/api/dialogs/${encodeURIComponent(dialogID)}/messages/${encodeURIComponent(messageID)}/retry`, { method: "POST" }),
   event: async (event: LogEvent, fields: { dialog_id?: string; message_id?: string; error_category?: ErrorCategory } = {}) => {
