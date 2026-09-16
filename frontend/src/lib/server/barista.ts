@@ -5,8 +5,8 @@ const maxBodyBytes = 32 * 1024 * 1024;
 const timeoutMilliseconds = 65_000;
 const bodyTimeoutMilliseconds = 10_000;
 const sessionCookie = "barista_session";
-const errorCategories = new Set(["config", "validation", "network", "timeout", "provider", "invalid_response", "not_found", "busy", "cancelled", "storage", "context_limit"]);
-const eventNames = new Set(["dialog_created", "dialog_selected", "dialog_deleted", "dialog_id_copied", "message_sent", "message_retried", "message_copied", "dialog_validation_failed", "message_failed", "admin_lookup", "admin_refresh", "strategy_selected", "branch_created", "branch_selected", "bff_request_completed", "bff_request_failed"]);
+const errorCategories = new Set(["config", "validation", "network", "timeout", "provider", "invalid_response", "not_found", "busy", "cancelled", "storage", "context_limit", "memory"]);
+const eventNames = new Set(["dialog_created", "dialog_selected", "dialog_deleted", "dialog_id_copied", "message_sent", "message_retried", "message_copied", "dialog_validation_failed", "message_failed", "admin_lookup", "admin_refresh", "strategy_selected", "branch_created", "branch_selected", "project_created", "project_selected", "project_deleted", "chat_created", "chat_selected", "chat_deleted", "memory_cleared", "bff_request_completed", "bff_request_failed"]);
 const contextStrategies = new Set(["sliding_window", "facts", "branching", "summary"]);
 
 type JSONRecord = Record<string, unknown>;
@@ -185,6 +185,14 @@ function projectDialog(value: unknown): JSONRecord | null {
 }
 
 function projectSuccess(method: string, path: string, value: unknown): unknown | null {
+  if (path === "/api/projects" && method === "GET") return projectProjectList(value);
+  if (path === "/api/projects" && method === "POST") return projectProjectList(value) ?? projectProject(value);
+  if (path.startsWith("/api/projects/")) {
+    if (path.endsWith("/memory")) return projectMemory(value);
+    if (path.includes("/chats/")) return projectChat(value);
+    if (path.endsWith("/chats")) return projectChat(value);
+    return projectProject(value);
+  }
   if (path === "/api/context-strategies" && method === "GET") return projectStrategies(value);
   if (path === "/api/dialogs" && method === "GET") {
     if (!value || typeof value !== "object") return null;
@@ -196,6 +204,44 @@ function projectSuccess(method: string, path: string, value: unknown): unknown |
   if (path === "/api/dialogs" || path.startsWith("/api/dialogs/")) return projectDialog(value);
   if (path.startsWith("/api/admin/logs")) return projectLogs(value);
   return value;
+}
+
+function projectMemory(value: unknown): JSONRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as JSONRecord;
+  if (!only(item, ["global_facts", "project_facts", "status", "error_category"]) || !Array.isArray(item.global_facts) || !Array.isArray(item.project_facts) || !["idle", "updating", "success", "error"].includes(item.status as string)) return null;
+  if (!item.global_facts.every((fact) => typeof fact === "string" && fact.trim()) || !item.project_facts.every((fact) => typeof fact === "string" && fact.trim())) return null;
+  if (item.error_category !== undefined && !errorCategories.has(item.error_category as string)) return null;
+  return item;
+}
+
+function projectChat(value: unknown): JSONRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as JSONRecord;
+  if (!only(item, ["id", "project_id", "title", "title_status", "created_at", "updated_at", "messages", "memory_status", "memory_error_category"]) || !string(item.id) || !string(item.project_id) || typeof item.title !== "string" || !["idle", "pending", "success", "fallback"].includes(item.title_status as string) || typeof item.created_at !== "string" || typeof item.updated_at !== "string" || !Array.isArray(item.messages) || !["idle", "updating", "success", "error"].includes(item.memory_status as string)) return null;
+  if (item.memory_error_category !== undefined && !errorCategories.has(item.memory_error_category as string)) return null;
+  const messages = item.messages.map(projectMessage);
+  return messages.every(Boolean) ? { ...item, messages } : null;
+}
+
+function projectProject(value: unknown): JSONRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as JSONRecord;
+  if (!only(item, ["id", "title", "created_at", "updated_at", "chats", "selected_chat_id"]) || !string(item.id) || typeof item.title !== "string" || typeof item.created_at !== "string" || typeof item.updated_at !== "string" || !Array.isArray(item.chats)) return null;
+  if (item.selected_chat_id !== undefined && item.selected_chat_id !== null && !string(item.selected_chat_id)) return null;
+  const chats = item.chats.map(projectChat);
+  return chats.every(Boolean) ? { ...item, chats } : null;
+}
+
+function projectProjectList(value: unknown): JSONRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as JSONRecord;
+  if (!only(item, ["projects", "selected_project_id", "selected_chat_id"]) || !Array.isArray(item.projects)) return null;
+  // Empty IDs encode an empty browser session in the backend list contract.
+  if (item.selected_project_id !== undefined && item.selected_project_id !== null && typeof item.selected_project_id !== "string") return null;
+  if (item.selected_chat_id !== undefined && item.selected_chat_id !== null && typeof item.selected_chat_id !== "string") return null;
+  const projects = item.projects.map(projectProject);
+  return projects.every(Boolean) ? { ...item, projects } : null;
 }
 
 function projectLogs(value: unknown): JSONRecord | null {
@@ -262,7 +308,7 @@ export async function retryMessage(request: Request, id: string, messageID: stri
 export async function postEvent(request: Request): Promise<Response> {
   const requestID = crypto.randomUUID();
   const body = await readJSON(request);
-  if (!body || !only(body, ["event", "dialog_id", "message_id", "error_category"]) || !eventNames.has(body.event as string) || (body.dialog_id !== undefined && !string(body.dialog_id)) || (body.message_id !== undefined && !string(body.message_id)) || (body.error_category !== undefined && (!errorCategories.has(body.error_category as string) || body.error_category === "config" || body.error_category === "not_found" || body.error_category === "busy"))) return validationFailure(request, requestID);
+  if (!body || !only(body, ["event", "dialog_id", "message_id", "project_id", "chat_id", "error_category"]) || !eventNames.has(body.event as string) || (body.dialog_id !== undefined && !string(body.dialog_id)) || (body.message_id !== undefined && !string(body.message_id)) || (body.project_id !== undefined && !string(body.project_id)) || (body.chat_id !== undefined && !string(body.chat_id)) || (body.error_category !== undefined && (!errorCategories.has(body.error_category as string) || body.error_category === "config" || body.error_category === "not_found" || body.error_category === "busy"))) return validationFailure(request, requestID);
   return forward(request, "POST", "/api/events", body);
 }
 
@@ -292,3 +338,33 @@ export async function selectBranch(request: Request, id: string, branchID: strin
 }
 
 export async function compactDialog(request: Request, id: string): Promise<Response> { return forward(request, "POST", `/api/dialogs/${encodeURIComponent(id)}/compact`); }
+
+export async function listProjects(request: Request): Promise<Response> { return forward(request, "GET", "/api/projects"); }
+export async function createProject(request: Request): Promise<Response> {
+  const body = await readJSON(request);
+  if (!body || !only(body, ["title"]) || (body.title !== undefined && !text(body.title))) return validationFailure(request, crypto.randomUUID());
+  return forward(request, "POST", "/api/projects", body);
+}
+export async function deleteProject(request: Request, projectID: string): Promise<Response> { return forward(request, "DELETE", `/api/projects/${encodeURIComponent(projectID)}`); }
+export async function renameProject(request: Request, projectID: string): Promise<Response> {
+  const body = await readJSON(request); const title = body?.title;
+  if (!body || !only(body, ["title"]) || typeof title !== "string" || !title.trim() || [...title.trim()].length > 100) return validationFailure(request, crypto.randomUUID());
+  return forward(request, "PATCH", `/api/projects/${encodeURIComponent(projectID)}`, { title: title.trim() });
+}
+export async function selectProject(request: Request, projectID: string): Promise<Response> { return forward(request, "POST", `/api/projects/${encodeURIComponent(projectID)}/select`); }
+export async function createChat(request: Request, projectID: string): Promise<Response> {
+  const body = await readJSON(request);
+  if (!body || !only(body, [])) return validationFailure(request, crypto.randomUUID());
+  return forward(request, "POST", `/api/projects/${encodeURIComponent(projectID)}/chats`, {});
+}
+export async function getChat(request: Request, projectID: string, chatID: string): Promise<Response> { return forward(request, "GET", `/api/projects/${encodeURIComponent(projectID)}/chats/${encodeURIComponent(chatID)}`); }
+export async function deleteChat(request: Request, projectID: string, chatID: string): Promise<Response> { return forward(request, "DELETE", `/api/projects/${encodeURIComponent(projectID)}/chats/${encodeURIComponent(chatID)}`); }
+export async function selectChat(request: Request, projectID: string, chatID: string): Promise<Response> { return forward(request, "POST", `/api/projects/${encodeURIComponent(projectID)}/chats/${encodeURIComponent(chatID)}/select`); }
+export async function sendProjectMessage(request: Request, projectID: string, chatID: string): Promise<Response> {
+  const requestID = crypto.randomUUID(); const body = await readJSON(request);
+  if (!body || !only(body, ["client_message_id", "text"]) || !string(body.client_message_id) || !text(body.text)) return validationFailure(request, requestID, chatID);
+  return forward(request, "POST", `/api/projects/${encodeURIComponent(projectID)}/chats/${encodeURIComponent(chatID)}/messages`, { client_message_id: body.client_message_id as string, text: body.text as string });
+}
+export async function retryProjectMessage(request: Request, projectID: string, chatID: string, messageID: string): Promise<Response> { return forward(request, "POST", `/api/projects/${encodeURIComponent(projectID)}/chats/${encodeURIComponent(chatID)}/messages/${encodeURIComponent(messageID)}/retry`); }
+export async function getMemory(request: Request, projectID: string): Promise<Response> { return forward(request, "GET", `/api/projects/${encodeURIComponent(projectID)}/memory`); }
+export async function clearMemory(request: Request, projectID: string, layer: "global" | "project"): Promise<Response> { return forward(request, "DELETE", `/api/projects/${encodeURIComponent(projectID)}/memory/${layer}`); }

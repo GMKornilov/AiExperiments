@@ -1,3 +1,4 @@
 addr: "127.0.0.1:18080"
 llm_config_path: "llm.yaml"
+history_path: "../../test-results/memory-e2e.json"
 log_text_payloads: false

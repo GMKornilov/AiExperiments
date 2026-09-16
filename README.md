@@ -1,9 +1,22 @@
 # AI-бариста
 
-Web-чат с несколькими диалогами и историей в JSON. Браузер обращается только к
-same-origin Next.js BFF; ключ LLM, endpoint и system prompt остаются в backend.
-После перезапуска сохраняются переписка, выбранный диалог и контекст агента.
-Диагностический журнал остаётся в памяти и очищается при перезапуске.
+Веб-агент для разговоров о кофе. Чаты объединены в проекты и изолированы
+границей browser-сеанса. Браузер обращается к same-origin Next.js BFF; ключи и
+приватный адрес LLM остаются в backend.
+
+## Память агента
+
+У агента три явно разделённых слоя:
+
+- краткосрочная — последние `N` сообщений открытого чата;
+- рабочая — факты текущего проекта;
+- долговременная — общие факты текущего browser-сеанса.
+
+Перед каждым ответом backend заново строит system prompt из базовых правил,
+общей и проектной памяти. После успешного main LLM вызова выполняется memory
+extractor; ответ показывается только после его завершения. При ошибке extractor
+пара user/assistant сохраняется и показывается, а project/global snapshots
+остаются прежними с безопасным статусом ошибки.
 
 ## Локальный запуск
 
@@ -11,12 +24,20 @@ same-origin Next.js BFF; ключ LLM, endpoint и system prompt остаютс�
 cp backend/config.example.yaml backend/config.yaml
 cp backend/llm.example.yaml backend/llm.yaml
 # заполните api_key в backend/llm.yaml
-cd backend && go run ./cmd/api-server --config=config.yaml
+cd backend && GOCACHE=$PWD/.gocache go run ./cmd/api-server --config=config.yaml
 ```
 
-Во втором терминале выполните `cd frontend && cp .env.example .env.local && npm ci && npm run dev`.
-Откройте [localhost:3000](http://localhost:3000). Журнал конкретного диалога доступен на `/admin`
-по его точному ID.
+Во втором терминале:
+
+```sh
+cd frontend && cp .env.example .env.local && npm ci && npm run dev
+```
+
+Откройте [localhost:3000](http://localhost:3000).
+
+В `backend/llm.yaml` обязательны секции `chat`, `text` и `memory`. Секция
+`memory` использует [memory extractor prompt](backend/prompts/memory-extractor-system.txt)
+и должна возвращать строгий JSON с `global_facts` и `project_facts`.
 
 ## Docker Compose
 
@@ -24,70 +45,18 @@ cd backend && go run ./cmd/api-server --config=config.yaml
 docker compose up --build
 ```
 
-Compose монтирует `backend/config.yaml`, вложенный `backend/llm.yaml` и все system
-prompts, включая facts, read-only. В `llm.yaml` обязательны секции `chat` для
-основного ответа и `text` для фонового названия первого вопроса. Изменения LLM
-YAML и prompt применяются к следующим созданным
-диалогам; backend config применяется после перезапуска. Локальные конфиги
-с ключами не включаются в образ и не должны попадать в Git.
+История хранится в одном JSON-файле версии 3 по `history_path`; она содержит
+только данные сеанса, проекты, чаты и memory snapshots, но не credentials.
+Volume `barista-history` переживает пересоздание контейнеров. `docker compose
+down -v` удалит эту историю.
 
-## Поведение и проверки
-
-У каждого диалога свой неизменяемый снимок LLM-настроек. После ошибки новое сообщение
-заблокировано до ручного повтора; refresh восстанавливает принятую историю. Удаление
-требует подтверждения и отменяет ожидающий ответ.
-
-Перед первым сообщением выберите стратегию: `Sliding Window`, `Facts`, `Branching`
-или `Summary`. Выбор неизменяем после первого принятого ввода. Корневой
-`context_window_messages` в `backend/llm.yaml` задаёт N для Sliding Window/Facts
-и по умолчанию равен 10. Facts требует отдельную секцию `facts` с endpoint, ключом,
-моделью, timeout и `prompts/facts-system.txt`; при отсутствии секции карточка
-недоступна. Summary использует свою секцию с `keep_last_messages` и `batch_size`.
-`/compact` работает только в Summary. Полная переписка, facts, ветки, usage и
-снимки конфигурации сохраняются без credentials.
-
-Полоса контекста показывает вход последнего запроса по usage провайдера относительно
-`chat.context_window_tokens`. Укажите реальный лимит выбранной модели; 0 означает
-неизвестный лимит и скрывает полосу, чтобы не показывать выдуманный процент.
-Рядом — приблизительный объём полной и отправленной истории (UTF-8 / 4, с накладными
-расходами на сообщения); это не точная токенизация.
-Сценарий сравнения: [стратегии контекста](docs/context-strategies-scenario.md).
-
-Над полем ввода — «Учтено токенов»: сумма подтверждённого расхода основной
-беседы, без генерации названия. Вход включает system prompt и всю отправленную
-историю; выход может включать рассуждения модели. Если статистика не пришла,
-счётчик не увеличивается. Показатели сохраняются вместе с перепиской.
-
-`backend/data/history.json` содержит только индекс сессий, ID чатов и выбор.
-Путь индекса можно изменить через `history_path` в backend config (относительно
-этого config); файлы чатов лежат в каталоге с именем индекса без расширения.
-Изменение одного чата не переписывает файлы остальных.
-В Docker используется volume `barista-history`, который сохраняется при
-пересоздании контейнеров; `docker compose down -v` удаляет и историю.
-Одно хранилище предназначено для одного backend-процесса.
-
-После перезапуска откройте сайт в том же браузере с прежней cookie (срок 30 дней).
-Прерванный запрос можно повторить вручную. JSON содержит переписку, названия и
-system prompts, но не API-ключи: они читаются из LLM config при восстановлении.
-Сохранённые endpoint должны совпадать с endpoint текущего config; модель и prompt
-старого диалога сохраняются. При повреждении JSON backend не запускается и не
-затирает файл. При ошибке записи сервис блокирует операции до устранения причины
-и перезапуска.
-
-- [Спецификация](.specs/barista-agent/SPEC.md)
-- [Спецификация стратегий контекста](.specs/context-strategies/SPEC.md)
-- [Диагностика и журнал](docs/llm-logs.md)
-- [Демонстрация учёта токенов](docs/token-usage-demo.md)
-- [Browser-проверки](frontend/e2e/README.md)
+## Проверки
 
 ```sh
-cd backend && go test -race ./... && go vet ./...
-```
-
-```sh
+cd backend && GOCACHE=$PWD/.gocache go test -race ./... && GOCACHE=$PWD/.gocache go vet ./...
 cd frontend && npm run lint && npm run typecheck && npm test && npm run build
 ```
 
-`/compact` суммирует оставшийся хвост только в стратегии Summary. Над перепиской
-отображается заполнение окна по последнему chat input; размер задаётся
-`chat.context_window_tokens` в backend/llm.yaml.
+- [Актуальный контракт агента](.specs/barista-agent/SPEC.md)
+- [Актуальная модель памяти](.specs/memory-layers/SPEC.md)
+- [Архив прежних решений](.specs/deprecated/README.md) — историческая справка, не текущий контракт.

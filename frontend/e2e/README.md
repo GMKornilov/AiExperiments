@@ -12,12 +12,24 @@ node frontend/e2e/fixtures/provider.mjs
 (cd frontend && BARISTA_BACKEND_URL=http://127.0.0.1:18080 npm run dev -- --port 13000)
 ```
 
+Fixture state is isolated in `frontend/test-results/memory-e2e.json`. Если нужен
+чистый прогон, остановите backend и удалите только этот файл перед запуском.
+
 `backend.yaml`, nested `llm.yaml` и оба prompt в `fixtures/` содержат e2e-only
 dummy credential. Set `BARISTA_E2E_URL` when using another frontend URL.
 
 ```sh
 npm run test:e2e
 ```
+
+По умолчанию Playwright запускает только `memory.spec.mjs`, соответствующий
+активному контракту проектов и трёх слоёв памяти. Остальные файлы в `e2e/`
+сохраняются как deprecated reference для будущего возврата к стратегиям,
+веткам и summary и не входят в текущую регрессию.
+
+`memory.spec.mjs` использует отдельную `memory` модель: `memory-slow` задерживает extractor,
+`memory-error` отвечает 503, а `memory-invalid` возвращает невалидный JSON. Он проверяет, что
+ответ не появляется до extractor-а, facts отображаются в нужных слоях и очистка изолирована.
 
 История сжимается в тесте `compression.spec.mjs`: fixture уже содержит summary
 с N=3, batch_size=2 и окно chat=1000. Summary и usage синтетические.

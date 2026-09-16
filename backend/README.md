@@ -1,58 +1,66 @@
 # Backend AI-бариста
 
-Новый диалог создаётся с обязательным `context_strategy`: `sliding_window`,
-`facts`, `branching` или `summary`. Корневой `context_window_messages` задаёт N
-(по умолчанию 10). Необязательные секции `facts` и `summary` имеют отдельные
-snapshots; отсутствующая секция делает стратегию недоступной. Facts хранит только
-валидный плоский JSON object, ветки переключаются без LLM-вызова, а `/compact`
-доступен только Summary. История сохраняет эти состояния без API-ключей.
+Backend реализует проекты с чатами и три слоя памяти в рамках `X-Session-ID`:
+история текущего чата, project facts и global facts. Другой browser-сеанс не
+может читать или менять эти данные.
+
+## Запуск
 
 ```sh
 cp config.example.yaml config.yaml
 cp llm.example.yaml llm.yaml
 # заполните api_key в llm.yaml
-go run ./cmd/api-server --config=config.yaml
+GOCACHE=$PWD/.gocache go run ./cmd/api-server --config=config.yaml
 ```
 
-`config.yaml` содержит `addr`, `llm_config_path`, `log_text_payloads` и
-`history_path` (путь индекса, по умолчанию `data/history.json`, относительно config).
-`llm.yaml` содержит обязательные секции `chat` и `text`. В каждой указаны
-endpoint, credential, модель, timeout и путь к своему system prompt. `chat`
-создаёт ответ бариста; `text` один раз асинхронно создаёт название после первого
-принятого сообщения. Backend читает оба снимка при создании диалога и сохраняет
-их вместе с историей в JSON без API-ключей. При восстановлении ключи берутся
-из текущего LLM config, endpoint должны совпадать с сохранёнными. История и
-system prompt восстанавливаются из JSON. Обычные chat API требуют `X-Session-ID`;
-admin lookup принимает только точный ID диалога. При перезапуске очищается
-только диагностический журнал; pending-запрос становится error/cancelled с retry.
+`config.yaml` задаёт `addr`, `llm_config_path` и `history_path`. `llm.yaml`
+содержит обязательные LLM-секции:
 
-Каждый чат хранится в отдельном `data/history/<dialog-id>.json` версии 1.
-Индекс `data/history.json` версии 2 содержит только сессии, выбор и ID чатов.
-Каталог чатов — путь индекса без расширения; для пути без расширения добавляется
-суффикс `.dialogs`. Каталог создаётся автоматически. Изменение чата переписывает
-только изменённые файлы через временный файл, sync и rename; select меняет только
-индекс. Create пишет чат до индекса, delete удаляет ссылку из индекса до файла.
-После аварийного завершения осиротевшие файлы удаляются при загрузке и не
-возвращаются в список. Отсутствующий индекс при непустом каталоге чатов блокирует
-запуск, чтобы не потерять историю. ID проверяется перед формированием пути.
+- `chat` — основной ответ;
+- `text` — конфигурационный endpoint, сохранённый в runtime snapshot;
+- `memory` — extractor с отдельным system prompt.
 
-Одно хранилище — один backend-процесс;
-в Compose `/app/data` подключён к persistent volume. История не входит в Git
-и Docker build context. Для резервной копии остановите backend и скопируйте
-индекс вместе с каталогом чатов.
-Повреждённый файл не затирается; ошибка загрузки останавливает запуск. Ошибка
-записи возвращает HTTP 503/category=storage и блокирует дальнейшие операции
-до исправления файловой системы и перезапуска. В BFF это безопасный HTTP 502.
-События `history_load` и `history_save` содержат correlation ID, результат,
-категорию и длительность, но не содержимое истории или секреты.
+`context_window_messages` задаёт положительное N и по умолчанию равен 10.
+`memory.system_prompt_path` должен указывать на
+`prompts/memory-extractor-system.txt`. Extractor получает прежние snapshots и
+последний обмен как данные, возвращает только JSON object с массивами
+`global_facts` и `project_facts`; оба массива заменяются согласованно.
 
-В каждом endpoint необязательное `temperature` — конечное число от `0` до `2`;
-если оно отсутствует, используется `1`. Значение `0` передаётся провайдеру как
-явное поле JSON.
+## Runtime-поток
 
-Если Compose собирает образы, но backend завершается с `history_load` / `storage`,
-проверьте `history_path`: это путь к файлу индекса (`data/history.json`), а не
-к каталогу отдельных чатов (`data/history/`). При ошибочно заданном каталоге
-исправьте путь и повторите `docker compose up --build`; удалять volume не нужно.
-Та же категория ошибки возможна и по другим причинам — прежде чем менять или
-удалять данные, проверьте фактический путь и права доступа.
+1. Backend загружает global/project memory и N сообщений выбранного чата.
+2. Собирает новый main system prompt, где memory размечена как данные, а не инструкции.
+3. Вызывает main LLM.
+4. Вызывает memory extractor и сохраняет user/assistant pair вместе с валидными snapshots.
+
+Если extractor недоступен или его JSON невалиден, pair сохраняется, snapshots
+не меняются, а клиент получает response с `memory_status: "error"` и безопасной
+категорией. Если основной LLM вызов завершился ошибкой, user-реплика сохраняется
+как error и может быть повторена вручную без дублирования пары.
+
+## HTTP API
+
+Активный API начинается с `/api/projects`: проекты содержат `/chats`, а память
+доступна через `/memory`, `/memory/global` и `/memory/project`. Mutating и
+reading requests требуют `X-Session-ID`. Выбор проекта или чата, очистка и
+удаление подтверждаются UI; backend возвращает только состояние владельца
+сессии и безопасные error categories.
+
+`history_path` — единый JSON state-файл версии 3. При переходе со старого
+формата legacy-чаты не мигрируются: старая история и связанная папка удаляются,
+новая модель начинает с пустого состояния. Файл не содержит credentials.
+
+Логи операций и LLM-циклов содержат correlation ID, IDs проекта/чата, результат,
+категорию и длительность; raw сообщения, facts и секреты не логируются.
+
+## Проверки
+
+```sh
+GOCACHE=$PWD/.gocache go test -race ./...
+GOCACHE=$PWD/.gocache go vet ./...
+```
+
+Актуальные требования: [агент](../.specs/barista-agent/SPEC.md) и
+[слои памяти](../.specs/memory-layers/SPEC.md). Предыдущие стратегии контекста
+и связанные решения лежат в [deprecated archive](../.specs/deprecated/README.md)
+только как справочный материал.

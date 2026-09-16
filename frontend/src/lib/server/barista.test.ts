@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createDialog, listDialogs, sendMessage } from "./barista";
+import { createDialog, getMemory, listDialogs, listProjects, renameProject, sendMessage } from "./barista";
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
@@ -7,6 +7,38 @@ const dialog = { id: "d", title: "Новый диалог", title_status: "idle"
 const createRequest = (init: RequestInit = {}) => new Request("http://web/api/dialogs", { ...init, method: "POST", headers: { "content-type": "application/json", ...(init.headers ?? {}) }, body: JSON.stringify({ context_strategy: "summary" }) });
 
 describe("barista BFF", () => {
+  it("валидирует и передаёт trim-имя проекта при PATCH", async () => {
+    const saved = { id: "p1", title: "Дом", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", chats: [] };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(saved)); vi.stubGlobal("fetch", fetchMock);
+    const request = new Request("http://web/api/projects/p1", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "  Дом  " }) });
+    expect((await renameProject(request, "p1")).status).toBe(200);
+    expect(fetchMock.mock.calls[0][1].body).toContain('"title":"Дом"');
+    const invalid = await renameProject(new Request("http://web/api/projects/p1", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: " " }) }), "p1");
+    expect(invalid.status).toBe(400);
+  });
+  it("проецирует проекты и memory facts без лишних backend-полей", async () => {
+    const saved = { projects: [{ id: "p1", title: "Кофе", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", chats: [], selected_chat_id: null }], selected_project_id: "p1", selected_chat_id: null };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(saved)); vi.stubGlobal("fetch", fetchMock);
+    const result = await listProjects(new Request("http://web/api/projects"));
+    expect(result.status).toBe(200); expect(await result.json()).toEqual(saved);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ global_facts: ["V60"], project_facts: ["Эфиопия"], status: "success" })));
+    const memory = await getMemory(new Request("http://web/api/projects/p1/memory"), "p1");
+    expect(await memory.json()).toEqual({ global_facts: ["V60"], project_facts: ["Эфиопия"], status: "success" });
+  });
+
+  it("принимает пустые selected IDs для нового browser-сеанса", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ projects: [], selected_project_id: "", selected_chat_id: "" })));
+    const result = await listProjects(new Request("http://web/api/projects"));
+    expect(result.status).toBe(200);
+    expect(await result.json()).toEqual({ projects: [], selected_project_id: "", selected_chat_id: "" });
+  });
+
+  it("не пропускает невалидный memory snapshot из backend", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ global_facts: ["V60", ""], project_facts: [], status: "success" })));
+    const result = await getMemory(new Request("http://web/api/projects/p1/memory"), "p1");
+    expect(result.status).toBe(502); expect((await result.json()).error.category).toBe("invalid_response");
+  });
+
   it("forwards a 14 MB prompt unchanged", async () => {
     const value = "123456 ".repeat(2_000_000);
     const fetchMock = vi.fn().mockResolvedValue(Response.json(dialog));

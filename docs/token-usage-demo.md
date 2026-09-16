@@ -69,4 +69,4 @@ Timeout, ограничение HTTP или ошибка сети не дока�
 В этой QA-проверке платный DeepSeek API не вызывался. Реальные короткий, длинный
 и переполненный диалоги с `deepseek-v4-pro` остаются непроверенными; приведённая
 таблица относится исключительно к имитации. Итог выполнения проверок записан в
-[VERIFICATION.md](../.specs/barista-agent/VERIFICATION.md).
+[историческом VERIFICATION.md](../.specs/deprecated/barista-agent/VERIFICATION.md).
