@@ -62,6 +62,7 @@ type DialogSnapshot struct {
 	Text                  Snapshot       `json:"text"`
 	Summary               *SummaryConfig `json:"summary,omitempty"`
 	Facts                 *FactsConfig   `json:"facts,omitempty"`
+	Memory                *FactsConfig   `json:"memory,omitempty"`
 	ContextWindowMessages int            `json:"context_window_messages"`
 }
 
@@ -102,6 +103,11 @@ func (s DialogSnapshot) Validate() error {
 	if s.Facts != nil {
 		if err := s.Facts.Snapshot.Validate(); err != nil {
 			return fmt.Errorf("facts: %w", err)
+		}
+	}
+	if s.Memory != nil {
+		if err := s.Memory.Snapshot.Validate(); err != nil {
+			return fmt.Errorf("memory: %w", err)
 		}
 	}
 	if err := s.Chat.Validate(); err != nil {

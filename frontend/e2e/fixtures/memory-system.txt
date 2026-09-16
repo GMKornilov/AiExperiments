@@ -1,0 +1,1 @@
+Return only a JSON object with global_facts and project_facts arrays. Extract only equipment and beans directly confirmed by the user.

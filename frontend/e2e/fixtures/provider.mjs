@@ -30,6 +30,27 @@ createServer(async (request, response) => {
     }));
     return;
   }
+  if (body.model === "memory-extractor") {
+    if (text.includes("memory-error")) { response.writeHead(503).end("controlled memory failure"); return; }
+    if (text.includes("memory-slow")) await new Promise((resolve) => setTimeout(resolve, 4000));
+    if (text.includes("memory-invalid")) {
+      response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ choices: [{ message: { content: "not-json" } }], usage: { prompt_tokens: 7, completion_tokens: 3 } }));
+      return;
+    }
+    let payload;
+    try { payload = JSON.parse(text); } catch { response.writeHead(400).end("invalid memory payload"); return; }
+    const latest = [...(payload?.messages ?? [])].reverse().find((message) => message?.role === "user")?.text ?? "";
+    // The extractor contract returns complete snapshots. Preserve prior facts unless
+    // the user explicitly says that a resource is unavailable or finished.
+    let facts = [...(payload?.global_facts ?? [])];
+    let projectFacts = [...(payload?.project_facts ?? [])];
+    if (latest.includes("V60") && !facts.includes("Оборудование: V60")) facts.push("Оборудование: V60");
+    if (latest.includes("Эфиоп") && !projectFacts.includes("Есть зёрна: Эфиопия")) projectFacts.push("Есть зёрна: Эфиопия");
+    if (latest.includes("V60 больше нет")) facts = facts.filter((fact) => fact !== "Оборудование: V60");
+    if (latest.includes("Эфиопия закончилась")) projectFacts = projectFacts.filter((fact) => fact !== "Есть зёрна: Эфиопия");
+    response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ global_facts: facts, project_facts: projectFacts }) } }], usage: { prompt_tokens: 7, completion_tokens: 3 } }));
+    return;
+  }
   if (body.model === "e2e-summary-model") {
     response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({
       choices: [{ message: { content: "Пользователь предпочитает кофе без молока; доза 18 г." } }],

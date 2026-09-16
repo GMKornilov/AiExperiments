@@ -1,5 +1,5 @@
 chat:
-  context_window_tokens: 1000
+  context_window_messages: 3
   base_url: "http://127.0.0.1:18081"
   api_key: "e2e-dummy-credential"
   model: "e2e-fixture-model"
@@ -17,6 +17,12 @@ facts:
   model: "e2e-facts-model"
   request_timeout: 10s
   system_prompt_path: "facts-system.txt"
+memory:
+  base_url: "http://127.0.0.1:18081"
+  api_key: "e2e-dummy-credential"
+  model: "memory-extractor"
+  request_timeout: 10s
+  system_prompt_path: "memory-system.txt"
 summary:
   base_url: "http://127.0.0.1:18081"
   api_key: "e2e-dummy-credential"

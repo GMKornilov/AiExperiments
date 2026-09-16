@@ -1,54 +1,42 @@
-import type { AdminLogsResponse, APIError, ContextStrategy, ContextStrategyID, Dialog, DialogList, ErrorCategory, LogEvent } from "../model/types";
+import type { APIError, AdminLogsResponse, Chat, ErrorCategory, LogEvent, Memory, Project, ProjectList } from "../model/types";
 
 const genericError = "Не удалось получить ответ. Повторите отправку.";
-
-export class BaristaAPIError extends Error {
-  constructor(readonly category: ErrorCategory, message = genericError) {
-    super(message);
-  }
-}
+export class BaristaAPIError extends Error { constructor(readonly category: ErrorCategory, message = genericError) { super(message); } }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try { response = await fetch(path, { cache: "no-store", ...init }); } catch { throw new BaristaAPIError("network"); }
   if (response.status === 204) return undefined as T;
   const payload = await response.json().catch(() => null) as T | { error?: APIError } | null;
-  if (!response.ok) {
-    const error = payload && typeof payload === "object" && "error" in payload ? payload.error : undefined;
-    throw new BaristaAPIError(error?.category ?? "network", error?.message || genericError);
-  }
+  if (!response.ok) { const error = payload && typeof payload === "object" && "error" in payload ? payload.error : undefined; throw new BaristaAPIError(error?.category ?? "network", error?.message || genericError); }
   if (!payload) throw new BaristaAPIError("invalid_response");
   return payload as T;
 }
-
 const json = (body: unknown): RequestInit => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+const projectPath = (projectID: string) => `/api/projects/${encodeURIComponent(projectID)}`;
+const chatPath = (projectID: string, chatID: string) => `${projectPath(projectID)}/chats/${encodeURIComponent(chatID)}`;
 
 export const baristaClient = {
-  list: () => request<DialogList>("/api/dialogs"),
-  get: (id: string) => request<Dialog>(`/api/dialogs/${encodeURIComponent(id)}`),
-  strategies: () => request<{ strategies: ContextStrategy[] }>("/api/context-strategies"),
-  create: (contextStrategy: ContextStrategyID) => request<Dialog>("/api/dialogs", json({ context_strategy: contextStrategy })),
-  select: async (id: string) => { await request<unknown>(`/api/dialogs/${encodeURIComponent(id)}/select`, { method: "POST" }); },
-  remove: async (id: string) => {
-    const response = await fetch(`/api/dialogs/${encodeURIComponent(id)}`, { method: "DELETE", cache: "no-store" });
-    if (!response.ok && response.status !== 204) {
-      const payload = await response.json().catch(() => null) as { error?: APIError } | null;
-      throw new BaristaAPIError(payload?.error?.category ?? "network", payload?.error?.message || genericError);
-    }
-  },
-  compact: (id: string) => request<Dialog>(`/api/dialogs/${encodeURIComponent(id)}/compact`, { method: "POST" }),
-  strategy: (id: string, contextStrategy: ContextStrategyID) => request<Dialog>(`/api/dialogs/${encodeURIComponent(id)}/strategy`, { ...json({ context_strategy: contextStrategy }), method: "PATCH" }),
-  createBranch: (id: string) => request<Dialog>(`/api/dialogs/${encodeURIComponent(id)}/branches`, json({})),
-  selectBranch: (id: string, branchID: string) => request<Dialog>(`/api/dialogs/${encodeURIComponent(id)}/branches/${encodeURIComponent(branchID)}/select`, json({})),
-  send: (dialogID: string, clientMessageID: string, text: string) => request<Dialog>(`/api/dialogs/${encodeURIComponent(dialogID)}/messages`, json({ client_message_id: clientMessageID, text })),
-  retry: (dialogID: string, messageID: string) => request<Dialog>(`/api/dialogs/${encodeURIComponent(dialogID)}/messages/${encodeURIComponent(messageID)}/retry`, { method: "POST" }),
-  event: async (event: LogEvent, fields: { dialog_id?: string; message_id?: string; error_category?: ErrorCategory } = {}) => {
-    try { await request<unknown>("/api/events", json({ event, ...fields })); } catch { /* telemetry must not break chat */ }
-  },
+  projects: () => request<ProjectList>("/api/projects"),
+  createProject: (title?: string) => request<ProjectList | Project>("/api/projects", json(title ? { title } : {})),
+  selectProject: (id: string) => request<unknown>(`${projectPath(id)}/select`, { method: "POST" }),
+  renameProject: (id: string, title: string) => request<Project>(projectPath(id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title }) }),
+  removeProject: (id: string) => request<unknown>(projectPath(id), { method: "DELETE" }),
+  createChat: (projectID: string) => request<Chat>(`${projectPath(projectID)}/chats`, json({})),
+  getChat: (projectID: string, chatID: string) => request<Chat>(chatPath(projectID, chatID)),
+  selectChat: (projectID: string, chatID: string) => request<unknown>(`${chatPath(projectID, chatID)}/select`, { method: "POST" }),
+  removeChat: (projectID: string, chatID: string) => request<unknown>(chatPath(projectID, chatID), { method: "DELETE" }),
+  send: (projectID: string, chatID: string, clientMessageID: string, text: string) => request<Chat>(`${chatPath(projectID, chatID)}/messages`, json({ client_message_id: clientMessageID, text })),
+  retry: (projectID: string, chatID: string, messageID: string) => request<Chat>(`${chatPath(projectID, chatID)}/messages/${encodeURIComponent(messageID)}/retry`, { method: "POST" }),
+  memory: (projectID: string) => request<Memory>(`${projectPath(projectID)}/memory`),
+  clearGlobalMemory: (projectID: string) => request<void>(`${projectPath(projectID)}/memory/global`, { method: "DELETE" }),
+  clearProjectMemory: (projectID: string) => request<void>(`${projectPath(projectID)}/memory/project`, { method: "DELETE" }),
   logs: (dialogID: string, action: "lookup" | "refresh" | "poll") => request<AdminLogsResponse>(`/api/admin/logs?dialog_id=${encodeURIComponent(dialogID)}&action=${action}`),
+  event: async (event: LogEvent, fields: { project_id?: string; chat_id?: string; message_id?: string; error_category?: ErrorCategory } = {}) => { try { await request<unknown>("/api/events", json({ event, ...fields })); } catch { /* Telemetry never blocks chat. */ } },
 };
 
 export function userFacingError(error: unknown) {
-  if (error instanceof BaristaAPIError && error.category === "context_limit") return "Контекст диалога превышает лимит модели. Начните новый диалог.";
-  return error instanceof BaristaAPIError && error.category === "validation" ? error.message : genericError;
+  if (error instanceof BaristaAPIError && error.category === "validation") return error.message;
+  if (error instanceof BaristaAPIError && error.category === "storage") return "Хранилище временно недоступно. Повторите действие.";
+  return genericError;
 }

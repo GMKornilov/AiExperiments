@@ -28,6 +28,7 @@ type LLMConfig struct {
 	Text                  LLMEndpoint    `yaml:"text"`
 	Summary               *SummaryConfig `yaml:"summary"`
 	Facts                 *FactsConfig   `yaml:"facts"`
+	Memory                *FactsConfig   `yaml:"memory"`
 	ContextWindowMessages int            `yaml:"context_window_messages"`
 }
 type SummaryConfig struct {
@@ -123,6 +124,11 @@ func LoadLLM(path string) (LLMConfig, error) {
 	if cfg.Facts != nil {
 		if err := loadEndpoint(&cfg.Facts.Endpoint, filepath.Dir(path), raw["facts"]); err != nil {
 			return LLMConfig{}, fmt.Errorf("facts: %w", err)
+		}
+	}
+	if cfg.Memory != nil {
+		if err := loadEndpoint(&cfg.Memory.Endpoint, filepath.Dir(path), raw["memory"]); err != nil {
+			return LLMConfig{}, fmt.Errorf("memory: %w", err)
 		}
 	}
 	return cfg, nil

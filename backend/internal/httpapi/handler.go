@@ -103,6 +103,9 @@ func SnapshotLoader(path string) func() (agent.DialogSnapshot, error) {
 		if cfg.Facts != nil {
 			snap.Facts = &agent.FactsConfig{Snapshot: endpointSnapshot(cfg.Facts.Endpoint)}
 		}
+		if cfg.Memory != nil {
+			snap.Memory = &agent.FactsConfig{Snapshot: endpointSnapshot(cfg.Memory.Endpoint)}
+		}
 		return snap, nil
 	}
 }

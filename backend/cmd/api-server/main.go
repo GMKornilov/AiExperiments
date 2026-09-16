@@ -18,8 +18,7 @@ import (
 	"aichallenge/week_1/task_1/internal/config"
 	"aichallenge/week_1/task_1/internal/httpapi"
 	"aichallenge/week_1/task_1/internal/llm"
-	"aichallenge/week_1/task_1/internal/observability"
-	"aichallenge/week_1/task_1/internal/session"
+	"aichallenge/week_1/task_1/internal/memory"
 )
 
 func main() {
@@ -38,14 +37,13 @@ func main() {
 		os.Exit(1)
 	}
 	logConfig(logger, requestID, "success", time.Since(started), "")
-	journal := observability.NewJournal(cfg.LogTextPayloads, nil)
-	store, err := session.OpenStore(agent.OpenAIProvider{}, cfg.HistoryPath, httpapi.SnapshotLoader(cfg.LLMConfigPath))
+	store, err := memory.Open(agent.OpenAIProvider{}, cfg.HistoryPath, httpapi.SnapshotLoader(cfg.LLMConfigPath))
 	if err != nil {
 		logger.Error("barista.server", "source", "backend", "event", "server", "result", "failure", "correlation_id", requestID, "error_category", "storage")
 		os.Exit(1)
 	}
 	defer store.Close()
-	server := &http.Server{Addr: cfg.Addr, Handler: httpapi.New(store, httpapi.SnapshotLoader(cfg.LLMConfigPath), journal)}
+	server := &http.Server{Addr: cfg.Addr, Handler: httpapi.NewMemory(store)}
 	if err := serve(server, store.Close); err != nil {
 		logger.Error("barista.server", "source", "backend", "event", "server", "result", "failure", "correlation_id", requestID, "error_category", "network")
 		os.Exit(1)

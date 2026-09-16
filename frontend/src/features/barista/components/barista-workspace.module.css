@@ -1,7 +1,11 @@
 .shell { display:grid; grid-template-columns:17rem minmax(0,1fr); min-height:calc(100vh - 2rem); border:1px solid var(--color-line); border-radius:20px; overflow:hidden; background:rgb(34 18 12 / 78%); box-shadow:var(--shadow-card); }
 .sidebar { min-width:0; padding:1rem; border-right:1px solid var(--color-line); background:rgb(20 10 7 / 54%); }
 .newDialog,.empty button,.composer button,.confirm button { border:0; border-radius:10px; padding:.72rem .9rem; color:#28140a; background:var(--color-accent); font-weight:700; }
-.newDialog { width:100%; text-align:left; }
+.newDialog { position:sticky; top:0; z-index:1; width:100%; text-align:left; box-shadow:0 .45rem .65rem rgb(20 10 7 / 72%); }
+.projectList { margin-top:.7rem; }
+.projectRow { min-width:0; margin:.45rem 0; padding:.25rem 0; border-bottom:1px solid rgb(248 226 199 / 8%); }
+.chatList { display:grid; gap:.15rem; margin:.25rem 0 .35rem .65rem; }
+.addChat { border:1px dashed var(--color-line); border-radius:7px; padding:.45rem .55rem; color:var(--color-muted); background:transparent; text-align:left; }
 .counter { margin:1rem .25rem .55rem; color:var(--color-muted); font:700 .68rem/1 ui-monospace,SFMono-Regular,monospace; letter-spacing:.1em; text-transform:uppercase; }
 .dialogRow { display:grid; grid-template-columns:minmax(0,1fr); gap:.2rem; margin:.2rem 0; min-width:0; }
 .dialogMainRow { display:flex; gap:.2rem; min-width:0; }
@@ -11,9 +15,19 @@
 .dialogButton span,.selectedDialog span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .dialogButton small,.selectedDialog small,.chatHeader p { display:block; overflow:hidden; margin:.3rem 0 0; color:var(--color-muted); font:.65rem/1.25 ui-monospace,SFMono-Regular,monospace; text-overflow:ellipsis; white-space:nowrap; }
 .deleteButton { align-self:start; padding:.35rem .55rem; border:0; border-radius:6px; color:var(--color-muted); background:transparent; font-size:1.2rem; }
+.renameButton { align-self:start; padding:.42rem .5rem; border:0; border-radius:6px; color:var(--color-muted); background:transparent; }
+.renameButton:hover { background:rgb(248 226 199 / 10%); }
 .chat { display:flex; min-width:0; flex-direction:column; min-height:0; padding:clamp(1rem,3vw,2rem); }
 .chatHeader { display:flex; justify-content:space-between; gap:1rem; padding-bottom:1rem; border-bottom:1px solid var(--color-line); }
 .chatHeader h1,.empty h2,.confirm h2 { margin:0; font-size:clamp(1.25rem,3vw,1.8rem); font-weight:500; overflow-wrap:anywhere; }
+.memoryButton { align-self:start; border:1px solid var(--color-line); border-radius:8px; padding:.5rem .7rem; color:var(--color-ink); background:transparent; }
+.memoryPanel { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.8rem; margin:.8rem 0; padding:.8rem; border:1px solid var(--color-line); border-radius:12px; background:rgb(10 5 3 / 30%); }
+.memoryPanel > p { grid-column:1 / -1; margin:0; color:var(--color-muted); font-size:.8rem; }
+.memorySection { min-width:0; }
+.memorySection h2 { margin:0; font-size:.9rem; }
+.memorySection ul { max-height:9rem; margin:.5rem 0; padding-left:1.15rem; overflow:auto; }
+.memorySection li,.memorySection p { overflow-wrap:anywhere; white-space:pre-wrap; color:var(--color-muted); font-size:.82rem; }
+.memorySection button { border:1px solid var(--color-line); border-radius:7px; padding:.4rem .6rem; color:var(--color-ink); background:transparent; }
 .messages { display:flex; min-height:12rem; flex:1; flex-direction:column; gap:.8rem; padding:1.2rem 0; overflow:auto; }
 .bubble { max-width:90%; padding:.9rem 1rem; border:1px solid var(--color-line); border-radius:14px; overflow:hidden; }
 .userBubble { align-self:flex-end; background:rgb(232 166 93 / 13%); }
@@ -39,6 +53,7 @@
 .composer button:disabled { cursor:wait; opacity:.55; }.error { margin:0 0 .8rem; padding:.7rem; border-radius:8px; color:var(--color-danger); background:rgb(151 45 28 / 20%); }.empty { display:grid; min-height:16rem; place-content:center; gap:.6rem; text-align:center; }.empty p { margin:0; color:var(--color-muted); }.empty button { justify-self:center; margin-top:.6rem; }
 .menuButton { display:none; }.dialogOverlay { position:fixed; inset:0; z-index:2; display:grid; place-items:center; padding:1rem; background:rgb(0 0 0 / 62%); }.confirm { width:min(28rem,100%); padding:1.4rem; border:1px solid var(--color-line); border-radius:14px; background:var(--color-surface-strong); box-shadow:var(--shadow-card); }.confirm p { color:var(--color-muted); line-height:1.45; }.confirm div { display:flex; justify-content:flex-end; gap:.6rem; }.confirm button:first-child { color:var(--color-ink); background:transparent; }.confirm .danger { background:var(--color-danger); }
 @media (max-width: 640px) { .shell { display:block; min-height:calc(100vh - 1rem); border-radius:0; }.menuButton { display:block; width:100%; padding:.7rem 1rem; border:0; color:var(--color-ink); background:var(--color-surface-strong); text-align:left; }.sidebar { display:none; }.sidebarOpen { display:block; border-right:0; border-bottom:1px solid var(--color-line); }.chat { min-height:calc(100vh - 3rem); padding:1rem; }.bubble { max-width:100%; }.messages { min-height:14rem; } }
+@media (max-width:640px) { .memoryPanel { grid-template-columns:1fr; }.memoryPanel > p { grid-column:auto; } }
 
 .inputAnchor { position:relative; }
 .commandPopover { position:absolute; z-index:5; bottom:calc(100% + .5rem); left:0; right:0; padding:.45rem; border:1px solid var(--color-line); border-radius:14px; background:var(--color-surface-strong); box-shadow:0 12px 36px rgb(0 0 0 / 45%); animation:commandAppear 140ms ease-out; }
@@ -83,6 +98,7 @@
 }
 
 .bubble { flex-shrink:0; }
+.confirm input { width:100%; margin:.4rem 0 1rem; padding:.65rem; border:1px solid var(--color-line); border-radius:8px; color:var(--color-ink); background:rgb(8 4 3 / 45%); }
 .strategyPicker { width:min(100%,48rem); margin:.75rem 0; padding:.8rem; border:1px solid var(--color-line); border-radius:14px; min-width:0; }
 .strategyPicker legend { padding:0 .3rem; font-weight:700; }
 .strategyPicker p { margin:.15rem 0 .75rem; color:var(--color-muted); font-size:.85rem; }
