@@ -1,4 +1,4 @@
-import type { APIError, AdminLogsResponse, Chat, ErrorCategory, LogEvent, Memory, Project, ProjectList } from "../model/types";
+import type { APIError, AdminLogsResponse, Chat, ErrorCategory, LogEvent, Memory, ProfileList, Project, ProjectList } from "../model/types";
 
 const genericError = "Не удалось получить ответ. Повторите отправку.";
 export class BaristaAPIError extends Error { constructor(readonly category: ErrorCategory, message = genericError) { super(message); } }
@@ -18,6 +18,10 @@ const chatPath = (projectID: string, chatID: string) => `${projectPath(projectID
 
 export const baristaClient = {
   projects: () => request<ProjectList>("/api/projects"),
+  profiles: () => request<ProfileList>("/api/profiles"),
+  createProfile: (profile: { name: string; style: string; constraints: string; additional_context: string }) => request<ProfileList>("/api/profiles", json(profile)),
+  selectProfile: (id: string) => request<ProfileList>(`/api/profiles/${encodeURIComponent(id)}/select`, json({})),
+  removeProfile: (id: string) => request<void>(`/api/profiles/${encodeURIComponent(id)}`, { method: "DELETE" }),
   createProject: (title?: string) => request<ProjectList | Project>("/api/projects", json(title ? { title } : {})),
   selectProject: (id: string) => request<unknown>(`${projectPath(id)}/select`, { method: "POST" }),
   renameProject: (id: string, title: string) => request<Project>(projectPath(id), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title }) }),

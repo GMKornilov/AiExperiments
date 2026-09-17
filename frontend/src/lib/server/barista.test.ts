@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createDialog, getMemory, listDialogs, listProjects, renameProject, sendMessage } from "./barista";
+import { createDialog, createProfile, deleteProfile, getMemory, listDialogs, listProfiles, listProjects, renameProject, selectProfile, sendMessage } from "./barista";
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
@@ -7,6 +7,30 @@ const dialog = { id: "d", title: "Новый диалог", title_status: "idle"
 const createRequest = (init: RequestInit = {}) => new Request("http://web/api/dialogs", { ...init, method: "POST", headers: { "content-type": "application/json", ...(init.headers ?? {}) }, body: JSON.stringify({ context_strategy: "summary" }) });
 
 describe("barista BFF", () => {
+  it("валидирует и проецирует профили без лишних полей", async () => {
+    const profiles = { profiles: [
+      { id: "barista", name: "Бариста", style: "Дружелюбно", constraints: "Без выдумок", additional_context: "Рецепты", built_in: true },
+      { id: "custom", name: "Дом", style: "Кратко", constraints: "Без молока", additional_context: "V60", built_in: false },
+    ], active_profile_id: "custom" };
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(Response.json(profiles))); vi.stubGlobal("fetch", fetchMock);
+    expect(await (await listProfiles(new Request("http://web/api/profiles"))).json()).toEqual(profiles);
+    const created = await createProfile(new Request("http://web/api/profiles", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "  Дом  ", style: "Кратко", constraints: "Без молока", additional_context: "V60" }) }));
+    expect(created.status).toBe(200);
+    const createCall = fetchMock.mock.calls.find(([url, init]) => new URL(url).pathname === "/api/profiles" && init.method === "POST");
+    expect(createCall?.[1].body).toContain('"name":"Дом"');
+    const invalid = await createProfile(new Request("http://web/api/profiles", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Дом", style: " ", constraints: "Без молока", additional_context: "V60" }) }));
+    expect(invalid.status).toBe(400);
+  });
+
+  it("выбирает и удаляет профиль по изолированному session ID", async () => {
+    const profiles = { profiles: [{ id: "barista", name: "Бариста", style: "Стиль", constraints: "Границы", additional_context: "Контекст", built_in: true }], active_profile_id: "barista" };
+    const fetchMock = vi.fn().mockImplementation((url: URL | string) => Promise.resolve(new URL(url).pathname.endsWith("/custom") ? new Response(null, { status: 204 }) : Response.json(profiles))); vi.stubGlobal("fetch", fetchMock);
+    const cookie = "barista_session=12345678-1234-1234-1234-123456789abc";
+    expect((await selectProfile(new Request("http://web/api/profiles/barista/select", { method: "POST", headers: { cookie } }), "barista")).status).toBe(200);
+    expect((await deleteProfile(new Request("http://web/api/profiles/custom", { method: "DELETE", headers: { cookie } }), "custom")).status).toBe(204);
+    expect(fetchMock.mock.calls[0][1].headers["X-Session-ID"]).toBe("12345678-1234-1234-1234-123456789abc");
+  });
+
   it("валидирует и передаёт trim-имя проекта при PATCH", async () => {
     const saved = { id: "p1", title: "Дом", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", chats: [] };
     const fetchMock = vi.fn().mockResolvedValue(Response.json(saved)); vi.stubGlobal("fetch", fetchMock);

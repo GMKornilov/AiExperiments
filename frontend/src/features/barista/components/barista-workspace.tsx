@@ -2,8 +2,9 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { CollapsibleMessage } from "./collapsible-message";
+import { ProfileManager } from "./profile-manager";
 import { BaristaAPIError, baristaClient, userFacingError } from "../lib/chat-client";
-import type { BaristaMessage, Chat, Memory, Project, ProjectList } from "../model/types";
+import type { BaristaMessage, Chat, Memory, ProfileList, Project, ProjectList } from "../model/types";
 import styles from "./barista-workspace.module.css";
 
 type Confirmation = { kind: "project"; project: Project } | { kind: "chat"; chat: Chat } | { kind: "memory"; layer: "global" | "project" };
@@ -16,6 +17,10 @@ export function BaristaWorkspace() {
   const [selectedProjectID, setSelectedProjectID] = useState<string | null>(null);
   const [selectedChatID, setSelectedChatID] = useState<string | null>(null);
   const [memory, setMemory] = useState<Memory>(emptyMemory);
+  const [profiles, setProfiles] = useState<ProfileList | null>(null);
+  const [profilesLoading, setProfilesLoading] = useState(false);
+  const [profilesError, setProfilesError] = useState<string | null>(null);
+  const [profilesOpen, setProfilesOpen] = useState(false);
   const [ready, setReady] = useState(false); const [pending, setPending] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false); const [sidebarOpen, setSidebarOpen] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
@@ -35,7 +40,13 @@ export function BaristaWorkspace() {
     setSelectedChatID(chatID);
     if (projectID) setMemory(await baristaClient.memory(projectID)); else setMemory(emptyMemory);
   }
-  useEffect(() => { void Promise.resolve().then(load).catch(cause => setError(userFacingError(cause))).finally(() => setReady(true)); }, []);
+  async function loadProfiles() {
+    setProfilesLoading(true); setProfilesError(null);
+    try { setProfiles(await baristaClient.profiles()); }
+    catch (cause) { setProfilesError(userFacingError(cause)); }
+    finally { setProfilesLoading(false); }
+  }
+  useEffect(() => { void Promise.resolve().then(load).catch(cause => setError(userFacingError(cause))).finally(() => setReady(true)); void loadProfiles(); }, []);
   useEffect(() => {
     if (!selectedProjectID || !selectedChatID || selectedChat?.title_status !== "pending") return;
     let cancelled = false; let attempts = 0; let timer: ReturnType<typeof setTimeout> | undefined;
@@ -111,6 +122,7 @@ export function BaristaWorkspace() {
   return <div className={styles.shell}>
     <button className={styles.menuButton} type="button" aria-expanded={sidebarOpen} aria-controls="project-sidebar" onClick={() => setSidebarOpen(value => !value)}>Проекты</button>
     <aside id="project-sidebar" className={`${styles.sidebar} ${sidebarOpen ? styles.sidebarOpen : ""}`} aria-label="Проекты и чаты">
+      <button className={styles.profilesButton} type="button" onClick={() => setProfilesOpen(true)}>Профили</button>
       <button className={styles.newDialog} type="button" disabled={pending || !ready} onClick={() => void createProject()}>+ Новый проект</button>
       <nav className={styles.projectList}>{data.projects.map(project => <section key={project.id} className={styles.projectRow}><div className={styles.dialogMainRow}><button className={project.id === selectedProjectID ? styles.selectedDialog : styles.dialogButton} type="button" onClick={() => void selectProject(project)}>{project.title || "Новый проект"}</button><button className={styles.renameButton} type="button" aria-label={`Переименовать проект ${project.title}`} onClick={() => { setRenameTarget(project); setRenameTitle(project.title); }}>✎</button><button className={styles.deleteButton} type="button" aria-label={`Удалить проект ${project.title}`} onClick={() => setConfirmation({ kind: "project", project })}>×</button></div>{project.id === selectedProjectID && <div className={styles.chatList}>{project.chats.map(chat => <div className={styles.dialogMainRow} key={chat.id}><button className={chat.id === selectedChatID ? styles.selectedDialog : styles.dialogButton} type="button" onClick={() => void selectChat(chat)}>{chat.title || "Новый чат"}</button><button className={styles.deleteButton} type="button" aria-label={`Удалить чат ${chat.title}`} onClick={() => setConfirmation({ kind: "chat", chat })}>×</button></div>)}<button className={styles.addChat} type="button" disabled={pending} onClick={() => void createChat()}>+ Новый чат</button></div>}</section>)}</nav>
     </aside>
@@ -122,6 +134,7 @@ export function BaristaWorkspace() {
     </main>
     {confirmation && <div className={styles.dialogOverlay} role="presentation"><section className={styles.confirm} role="dialog" aria-modal="true" aria-labelledby="confirm-title"><h2 id="confirm-title">Подтвердите действие</h2><p>{confirmation.kind === "project" ? "Будут удалены проект, все его чаты и память проекта." : confirmation.kind === "chat" ? "Чат будет удалён. Память проекта останется." : `Будет очищена ${confirmation.layer === "global" ? "общая" : "память проекта"}.`}</p><div><button type="button" onClick={() => setConfirmation(null)}>Отмена</button><button className={styles.danger} type="button" onClick={() => void confirm()} disabled={pending}>{confirmation.kind === "memory" ? "Очистить" : "Удалить"}</button></div></section></div>}
     {renameTarget && <div className={styles.dialogOverlay} role="presentation"><form className={styles.confirm} role="dialog" aria-modal="true" aria-labelledby="rename-title" onSubmit={event => { event.preventDefault(); void renameProject(); }}><h2 id="rename-title">Переименовать проект</h2><label htmlFor="project-title">Название проекта</label><input id="project-title" maxLength={100} value={renameTitle} onChange={event => setRenameTitle(event.target.value)} autoFocus /><div><button type="button" onClick={() => setRenameTarget(null)}>Отмена</button><button type="submit" disabled={pending}>Сохранить</button></div></form></div>}
+    {profilesOpen && <ProfileManager initial={profiles} loading={profilesLoading} error={profilesError} onChange={setProfiles} onClose={() => setProfilesOpen(false)} onRetry={() => void loadProfiles()} />}
   </div>;
 }
 
