@@ -1,6 +1,10 @@
 services:
   barista-api:
     build: ./backend
+    # Файл передаётся только запущенному контейнеру и не входит в image.
+    # BARISTA_ENV_FILE позволяет выбрать другой dotenv-файл, например deploy/production.env.
+    env_file:
+      - ${BARISTA_ENV_FILE:-.env}
     volumes:
       - barista-history:/app/data
       - ./backend/config.yaml:/app/config.yaml:ro
@@ -14,6 +18,7 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+    restart: unless-stopped
 
   barista-web:
     build:
@@ -33,6 +38,7 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+    restart: unless-stopped
 
 volumes:
   barista-history:

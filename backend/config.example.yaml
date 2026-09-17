@@ -1,4 +1,4 @@
-# Backend service configuration.
+# Backend service configuration. Pass .env with --env-file; llm.yaml uses ${SECURE_API_KEY}.
 addr: ":8080"
 llm_config_path: "llm.yaml"
 log_text_payloads: false

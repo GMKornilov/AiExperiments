@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -87,5 +88,85 @@ func TestLoadBackendRejectsInvalid(t *testing.T) {
 	}
 	if _, err := LoadBackend(path); err == nil {
 		t.Fatal("ожидалась ошибка")
+	}
+}
+
+func TestLoadLLMExpandsEnvironmentPlaceholder(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("system"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CONFIG_TEST_API_KEY", "from-environment")
+	path := filepath.Join(dir, "llm.yaml")
+	body := "chat:\n  base_url: https://example.test\n  api_key: ${CONFIG_TEST_API_KEY}\n  model: chat\n  system_prompt_path: prompt.txt\ntext:\n  base_url: https://example.test\n  api_key: ${CONFIG_TEST_API_KEY}\n  model: text\n  system_prompt_path: prompt.txt\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadLLM(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Chat.APIKey != "from-environment" || cfg.Text.APIKey != "from-environment" {
+		t.Fatalf("ключи не подставлены: chat=%q text=%q", cfg.Chat.APIKey, cfg.Text.APIKey)
+	}
+}
+
+func TestLoadLLMRejectsMissingOrEmptyEnvironmentPlaceholderWithoutSecret(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("system"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CONFIG_TEST_EMPTY_API_KEY", "")
+	if err := os.Unsetenv("CONFIG_TEST_MISSING_API_KEY"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Unsetenv("CONFIG_TEST_MISSING_API_KEY") })
+	t.Setenv("CONFIG_TEST_UNRELATED_SECRET", "must-not-appear")
+	for _, name := range []string{"CONFIG_TEST_EMPTY_API_KEY", "CONFIG_TEST_MISSING_API_KEY"} {
+		path := filepath.Join(dir, name+".yaml")
+		body := "chat:\n  base_url: https://example.test\n  api_key: ${" + name + "}\n  model: chat\n  system_prompt_path: prompt.txt\ntext:\n  base_url: https://example.test\n  api_key: ${CONFIG_TEST_UNRELATED_SECRET}\n  model: text\n  system_prompt_path: prompt.txt\n"
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := LoadLLM(path)
+		if err == nil {
+			t.Fatalf("ожидалась ошибка переменной %q", name)
+		}
+		message := err.Error()
+		if !strings.Contains(message, name) {
+			t.Fatalf("в ошибке нет имени переменной: %q", message)
+		}
+		if strings.Contains(message, "must-not-appear") {
+			t.Fatalf("ошибка раскрыла значение секрета: %q", message)
+		}
+	}
+}
+
+func TestLoadEnvFilesPreservesProcessEnvironmentAndFileOrder(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.env")
+	second := filepath.Join(dir, "second.env")
+	if err := os.WriteFile(first, []byte("CONFIG_TEST_PROCESS=from-first\nCONFIG_TEST_FILE_ORDER=first\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte("CONFIG_TEST_PROCESS=from-second\nCONFIG_TEST_FILE_ORDER=second\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CONFIG_TEST_PROCESS", "from-process")
+	if err := os.Unsetenv("CONFIG_TEST_FILE_ORDER"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Unsetenv("CONFIG_TEST_FILE_ORDER") })
+
+	if err := LoadEnvFiles([]string{first, second}); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("CONFIG_TEST_PROCESS"); got != "from-process" {
+		t.Fatalf("значение окружения = %q, want from-process", got)
+	}
+	if got := os.Getenv("CONFIG_TEST_FILE_ORDER"); got != "first" {
+		t.Fatalf("приоритет dotenv-файлов = %q, want first", got)
 	}
 }
