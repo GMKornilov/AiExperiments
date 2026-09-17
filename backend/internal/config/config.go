@@ -7,14 +7,18 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/joho/godotenv"
 	"gopkg.in/yaml.v3"
 )
 
 const defaultRequestTimeout = 30 * time.Second
+
+var environmentPlaceholder = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
 type BackendConfig struct {
 	Addr            string `yaml:"addr"`
@@ -51,13 +55,9 @@ type LLMEndpoint struct {
 }
 
 func LoadBackend(path string) (BackendConfig, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return BackendConfig{}, fmt.Errorf("чтение backend config: %w", err)
-	}
 	var cfg BackendConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return BackendConfig{}, fmt.Errorf("разбор backend config: %w", err)
+	if err := loadYAML(path, &cfg); err != nil {
+		return BackendConfig{}, fmt.Errorf("backend config: %w", err)
 	}
 	if strings.TrimSpace(cfg.Addr) == "" {
 		return BackendConfig{}, fmt.Errorf("addr не должен быть пустым")
@@ -79,17 +79,13 @@ func LoadBackend(path string) (BackendConfig, error) {
 
 // LoadLLM creates a fresh immutable configuration snapshot for a new dialog.
 func LoadLLM(path string) (LLMConfig, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return LLMConfig{}, fmt.Errorf("чтение LLM config: %w", err)
-	}
 	var cfg LLMConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return LLMConfig{}, fmt.Errorf("разбор LLM config: %w", err)
-	}
 	var raw map[string]any
-	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return LLMConfig{}, fmt.Errorf("разбор LLM config: %w", err)
+	if err := loadYAML(path, &cfg); err != nil {
+		return LLMConfig{}, fmt.Errorf("LLM config: %w", err)
+	}
+	if err := loadYAML(path, &raw); err != nil {
+		return LLMConfig{}, fmt.Errorf("LLM config: %w", err)
 	}
 	if raw["chat"] == nil || raw["text"] == nil {
 		return LLMConfig{}, fmt.Errorf("chat и text обязательны")
@@ -132,6 +128,77 @@ func LoadLLM(path string) (LLMConfig, error) {
 		}
 	}
 	return cfg, nil
+}
+
+// LoadEnvFiles loads dotenv files without overwriting values already set in the
+// process environment. Earlier files take precedence over later files.
+func LoadEnvFiles(paths []string) error {
+	for _, path := range paths {
+		values, err := godotenv.Read(path)
+		if err != nil {
+			return fmt.Errorf("чтение dotenv-файла %q: %w", path, err)
+		}
+		for name, value := range values {
+			if _, exists := os.LookupEnv(name); exists {
+				continue
+			}
+			if err := os.Setenv(name, value); err != nil {
+				return fmt.Errorf("установка переменной окружения %q: %w", name, err)
+			}
+		}
+	}
+	return nil
+}
+
+func loadYAML(path string, target any) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("чтение YAML: %w", err)
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return fmt.Errorf("разбор YAML: %w", err)
+	}
+	if err := expandNodeEnvironment(&document); err != nil {
+		return err
+	}
+	if err := document.Decode(target); err != nil {
+		return fmt.Errorf("разбор YAML: %w", err)
+	}
+	return nil
+}
+
+func expandNodeEnvironment(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode && node.Tag == "!!str" {
+		value, err := expandEnvironment(node.Value)
+		if err != nil {
+			return err
+		}
+		node.Value = value
+	}
+	for _, child := range node.Content {
+		if err := expandNodeEnvironment(child); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func expandEnvironment(value string) (string, error) {
+	var missing string
+	expanded := environmentPlaceholder.ReplaceAllStringFunc(value, func(match string) string {
+		name := environmentPlaceholder.FindStringSubmatch(match)[1]
+		environmentValue, exists := os.LookupEnv(name)
+		if !exists || strings.TrimSpace(environmentValue) == "" {
+			missing = name
+			return match
+		}
+		return environmentValue
+	})
+	if missing != "" {
+		return "", fmt.Errorf("переменная окружения %q для YAML-конфигурации не задана или пуста", missing)
+	}
+	return expanded, nil
 }
 
 func loadEndpoint(cfg *LLMEndpoint, dir string, raw any) error {

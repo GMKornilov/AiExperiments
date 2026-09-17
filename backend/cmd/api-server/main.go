@@ -26,12 +26,16 @@ func main() {
 	logger := slog.Default()
 	started := time.Now()
 	requestID := llm.RequestID(llm.WithRequestID(context.Background(), ""))
-	configPath, err := parseFlags(os.Args[1:])
+	options, err := parseFlags(os.Args[1:])
 	if err != nil {
 		logConfig(logger, requestID, "failure", time.Since(started), "validation")
 		os.Exit(1)
 	}
-	cfg, err := config.LoadBackend(configPath)
+	if err := config.LoadEnvFiles(options.envFiles); err != nil {
+		logConfig(logger, requestID, "failure", time.Since(started), "config")
+		os.Exit(1)
+	}
+	cfg, err := config.LoadBackend(options.configPath)
 	if err != nil {
 		logConfig(logger, requestID, "failure", time.Since(started), "config")
 		os.Exit(1)
@@ -54,17 +58,30 @@ func logConfig(logger *slog.Logger, requestID, result string, duration time.Dura
 	logger.Info("barista.event", "source", "backend", "event", "config_read", "result", result, "correlation_id", requestID, "duration_ms", duration.Milliseconds(), "error_category", category)
 }
 
-func parseFlags(args []string) (string, error) {
+type options struct {
+	configPath string
+	envFiles   []string
+}
+
+func parseFlags(args []string) (options, error) {
 	flags := flag.NewFlagSet("api-server", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	path := flags.String("config", "config.yaml", "путь к backend YAML")
+	var envFiles []string
+	flags.Func("env-file", "путь к dotenv-файлу; флаг можно указать несколько раз", func(value string) error {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("путь к dotenv-файлу не должен быть пустым")
+		}
+		envFiles = append(envFiles, value)
+		return nil
+	})
 	if err := flags.Parse(args); err != nil {
-		return "", fmt.Errorf("разбор аргументов: %w", err)
+		return options{}, fmt.Errorf("разбор аргументов: %w", err)
 	}
 	if flags.NArg() != 0 || strings.TrimSpace(*path) == "" {
-		return "", fmt.Errorf("некорректные аргументы")
+		return options{}, fmt.Errorf("некорректные аргументы")
 	}
-	return *path, nil
+	return options{configPath: *path, envFiles: envFiles}, nil
 }
 func serve(server *http.Server, closeStore func()) error {
 	signals := make(chan os.Signal, 1)

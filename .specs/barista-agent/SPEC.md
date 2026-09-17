@@ -94,6 +94,40 @@ composer и не содержит выдуманной истории. Для lo
 результат, категорию ошибки и длительность, когда она применима. Логи не
 содержат secrets, credentials или неразрешённые текстовые payloads.
 
+## Runtime-конфигурация
+
+Backend читает YAML-конфигурации `config.yaml` и `llm.yaml`. Строковое значение
+вида `${NAME}` заменяется значением переменной окружения `NAME` до YAML-разбора.
+Если такая переменная отсутствует или её значение после trim пусто, запуск
+завершается безопасной диагностируемой config error: имя переменной допустимо в
+сообщении, её значение и содержимое YAML — нет.
+
+До чтения YAML `api-server` может загрузить один или несколько dotenv-файлов
+повторяемым флагом `--env-file`: например, `--env-file .env --env-file
+deploy/secrets.env`. Файлы обрабатываются слева направо, первое определение
+переменной имеет приоритет над последующими; уже установленное окружение ОС
+имеет приоритет над любым dotenv-файлом. Формат dotenv поддерживает стандартные
+экспортируемые переменные, кавычки и комментарии. Секреты размещаются в
+локальном `.env`, который не отслеживается Git; репозиторий содержит только
+`.env.example` без значений секретов.
+
+### Compose deployment
+
+Для production-запуска оператор создаёт `backend/config.yaml`,
+`backend/llm.yaml` и корневой `.env` из example-файлов, указывает секреты только
+в dotenv-файле и запускает `docker compose up --build -d`. Compose передаёт
+dotenv-файл в runtime environment `barista-api`; YAML и prompts монтируются
+read-only, а dotenv-файл не включается в image или Git. Поэтому placeholders в
+смонтированном YAML разрешаются backend при старте. Путь к custom dotenv-файлу
+задаётся host-переменной `BARISTA_ENV_FILE`, например
+`BARISTA_ENV_FILE=deploy/production.env docker compose up --build -d`.
+
+Backend не публикует свой порт за пределы Compose-сети. `barista-web` ожидает
+healthcheck `/healthz` backend; оба сервиса автоматически перезапускаются после
+сбоя, кроме явной остановки оператором. State history хранится в именованном
+volume и переживает пересоздание контейнеров; оператор явно предупреждён, что
+`docker compose down -v` удаляет этот state.
+
 <!-- ac-section: adaptive -->
 ## Адаптивность и доступность
 
@@ -158,6 +192,12 @@ provider и browser-сценарием.
   сохраняет его, а чаты и память не изменяются. Пустой/длинный title и storage
   error сохраняют прежнее название и возвращают безопасный outcome. Проверка:
   browser + API contract + persistence integration.
+- **AC-BAR-09.** Compose передаёт `.env` либо путь из `BARISTA_ENV_FILE` только
+  в runtime environment backend, и `${SECURE_API_KEY}` в смонтированном
+  `llm.yaml` успешно разрешается без включения dotenv-файла в image. Backend
+  остаётся недоступен с host напрямую, web ждёт `/healthz`, а named history
+  volume переживает пересоздание сервисов. Проверка: `docker compose config` с
+  временным dotenv-файлом + ручной container smoke test.
 
 Подготовка этой спецификации не включает изменения исходников, тестов,
 конфигурации, runtime-данных, Git-ветки или task-артефактов.

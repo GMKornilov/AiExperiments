@@ -2,14 +2,14 @@ chat:
   # Set to the actual context limit of your provider/model; 0 means unknown.
   context_window_tokens: 0
   base_url: "https://api.deepseek.com/v1"
-  api_key: "replace-me"
+  api_key: "${SECURE_API_KEY}"
   model: "deepseek-chat"
   request_timeout: 30s
   temperature: 1
   system_prompt_path: "prompts/barista-system.txt"
 text:
   base_url: "https://api.deepseek.com/v1"
-  api_key: "replace-me"
+  api_key: "${SECURE_API_KEY}"
   model: "deepseek-v4-flash"
   request_timeout: 30s
   temperature: 0.2
@@ -17,7 +17,7 @@ text:
 context_window_messages: 10
 memory:
   base_url: "https://api.deepseek.com/v1"
-  api_key: "replace-me"
+  api_key: "${SECURE_API_KEY}"
   model: "deepseek-v4-flash"
   request_timeout: 30s
   temperature: 0.2

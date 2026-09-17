@@ -7,10 +7,11 @@ Backend реализует проекты с чатами и три слоя п�
 ## Запуск
 
 ```sh
-cp config.example.yaml config.yaml
-cp llm.example.yaml llm.yaml
-# заполните api_key в llm.yaml
-GOCACHE=$PWD/.gocache go run ./cmd/api-server --config=config.yaml
+cp -n config.example.yaml config.yaml
+cp -n llm.example.yaml llm.yaml
+cp -n ../.env.example ../.env
+# заполните SECURE_API_KEY в ../.env
+GOCACHE=$PWD/.gocache go run ./cmd/api-server --config=config.yaml --env-file=../.env
 ```
 
 `config.yaml` задаёт `addr`, `llm_config_path` и `history_path`. `llm.yaml`
@@ -25,6 +26,36 @@ GOCACHE=$PWD/.gocache go run ./cmd/api-server --config=config.yaml
 `prompts/memory-extractor-system.txt`. Extractor получает прежние snapshots и
 последний обмен как данные, возвращает только JSON object с массивами
 `global_facts` и `project_facts`; оба массива заменяются согласованно.
+
+Строки YAML вида `${NAME}` получают значение переменной окружения `NAME` до
+разбора конфигурации. Для локальных секретов используйте корневой `.env` и
+передавайте его флагом `--env-file`; флаг можно повторять. Переменные процесса
+имеют приоритет, а между dotenv-файлами приоритет у первого определения.
+Незаданная либо пустая переменная прерывает запуск безопасной config error без
+значения секрета.
+
+## Docker Compose deployment
+
+Из корня репозитория создайте отсутствующие `backend/config.yaml`,
+`backend/llm.yaml` и корневой `.env` из соответствующих `*.example` файлов,
+заполните секрет и затем выполните:
+
+```sh
+docker compose up --build -d
+```
+
+Compose передаёт `.env` в environment `barista-api`, поэтому placeholder в
+смонтированном `llm.yaml` разворачивается в контейнере. `.env` не попадает в
+image. Чтобы использовать другой dotenv-файл, задайте путь на host:
+
+```sh
+BARISTA_ENV_FILE=deploy/production.env docker compose up --build -d
+```
+
+Не передавайте `--env-file` в команду backend внутри контейнера: для Compose
+значения уже находятся в environment процесса. Данные истории сохраняются в
+именованном volume `barista-history`; удаление volume (`docker compose down -v`)
+необратимо удаляет их.
 
 ## Runtime-поток
 
