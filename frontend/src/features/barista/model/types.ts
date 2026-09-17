@@ -10,6 +10,8 @@ export type Project = { id: string; title: string; created_at: string; updated_a
 export type ProjectList = { projects: Project[]; selected_project_id?: string | null; selected_chat_id?: string | null };
 export type Memory = { global_facts: string[]; project_facts: string[]; status: MemoryStatus; error_category?: ErrorCategory };
 export type APIError = { category: ErrorCategory; message: string };
+export type Profile = { id: string; name: string; style: string; constraints: string; additional_context: string; built_in: boolean };
+export type ProfileList = { profiles: Profile[]; active_profile_id: string };
 export type LogEvent = "project_created" | "project_selected" | "project_deleted" | "chat_created" | "chat_selected" | "chat_deleted" | "message_sent" | "message_retried" | "message_failed" | "memory_cleared" | "bff_request_completed" | "bff_request_failed";
 
 // Deprecated diagnostics remain available to the admin screen while its API is migrated.

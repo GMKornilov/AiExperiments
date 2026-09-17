@@ -89,6 +89,23 @@ func (h *memoryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		failMemory(w, 400, "validation")
 		return
 	}
+	if r.URL.Path == "/api/profiles" {
+		h.profiles(w, r, sid)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/profiles/") {
+		parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/profiles/"), "/"), "/")
+		if len(parts) == 2 && parts[1] == "select" {
+			h.selectProfile(w, r, sid, parts[0])
+			return
+		}
+		if len(parts) == 1 && parts[0] != "" {
+			h.profile(w, r, sid, parts[0])
+			return
+		}
+		http.NotFound(w, r)
+		return
+	}
 	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/projects"), "/"), "/")
 	if !strings.HasPrefix(r.URL.Path, "/api/projects") {
 		http.NotFound(w, r)
@@ -143,6 +160,58 @@ func (h *memoryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.NotFound(w, r)
+}
+
+func (h *memoryHandler) profiles(w http.ResponseWriter, r *http.Request, sid string) {
+	switch r.Method {
+	case http.MethodGet:
+		writeMemory(w, h.store.ListProfiles(sid))
+	case http.MethodPost:
+		var payload struct {
+			Name              string `json:"name"`
+			Style             string `json:"style"`
+			Constraints       string `json:"constraints"`
+			AdditionalContext string `json:"additional_context"`
+		}
+		if !decode(w, r, &payload) {
+			failMemory(w, http.StatusBadRequest, "validation")
+			return
+		}
+		listing, err := h.store.CreateProfile(sid, payload.Name, payload.Style, payload.Constraints, payload.AdditionalContext)
+		if err != nil {
+			memoryError(w, err)
+			return
+		}
+		writeMemory(w, listing)
+	default:
+		method(w, http.MethodGet, http.MethodPost)
+	}
+}
+
+func (h *memoryHandler) selectProfile(w http.ResponseWriter, r *http.Request, sid, profileID string) {
+	if r.Method != http.MethodPost {
+		method(w, http.MethodPost)
+		return
+	}
+	listing, err := h.store.SelectProfile(sid, profileID)
+	if err != nil {
+		memoryError(w, err)
+		return
+	}
+	writeMemory(w, listing)
+}
+
+func (h *memoryHandler) profile(w http.ResponseWriter, r *http.Request, sid, profileID string) {
+	if r.Method != http.MethodDelete {
+		method(w, http.MethodDelete)
+		return
+	}
+	_, err := h.store.DeleteProfile(sid, profileID)
+	if err != nil {
+		memoryError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 func (h *memoryHandler) projects(w http.ResponseWriter, r *http.Request, sid string) {
 	switch r.Method {

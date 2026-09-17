@@ -105,3 +105,51 @@ func TestMemoryHandlerRenamesProject(t *testing.T) {
 		t.Fatalf("status=%d", status)
 	}
 }
+
+func TestProfileHandlerCRUDValidationAndIsolation(t *testing.T) {
+	s, err := memory.New(&memoryProvider{}, memorySnapshot())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewMemory(s)
+	status, initial := callMemory(t, h, http.MethodGet, "/api/profiles", "")
+	if status != http.StatusOK || initial["active_profile_id"] != "barista" || len(initial["profiles"].([]any)) != 2 {
+		t.Fatalf("initial status=%d body=%v", status, initial)
+	}
+	status, unchanged := callMemory(t, h, http.MethodPost, "/api/profiles", `{"name":"custom","style":"","constraints":"x","additional_context":"x"}`)
+	if status != http.StatusBadRequest || unchanged["error"].(map[string]any)["category"] != "validation" {
+		t.Fatalf("validation status=%d body=%v", status, unchanged)
+	}
+	status, created := callMemory(t, h, http.MethodPost, "/api/profiles", `{"name":" custom ","style":"short","constraints":"safe","additional_context":"home"}`)
+	if status != http.StatusOK || len(created["profiles"].([]any)) != 3 {
+		t.Fatalf("created status=%d body=%v", status, created)
+	}
+	customID := created["active_profile_id"].(string)
+	status, duplicate := callMemory(t, h, http.MethodPost, "/api/profiles", `{"name":"CUSTOM","style":"short","constraints":"safe","additional_context":"home"}`)
+	if status != http.StatusBadRequest || duplicate["error"].(map[string]any)["category"] != "validation" {
+		t.Fatalf("duplicate status=%d body=%v", status, duplicate)
+	}
+	status, selected := callMemory(t, h, http.MethodPost, "/api/profiles/coffee-equipment/select", "")
+	if status != http.StatusOK || selected["active_profile_id"] != "coffee-equipment" {
+		t.Fatalf("select status=%d body=%v", status, selected)
+	}
+	status, _ = callMemory(t, h, http.MethodDelete, "/api/profiles/barista", "")
+	if status != http.StatusNotFound {
+		t.Fatalf("built-in delete status=%d", status)
+	}
+	status, _ = callMemory(t, h, http.MethodDelete, "/api/profiles/"+customID, "")
+	if status != http.StatusNoContent {
+		t.Fatalf("delete status=%d", status)
+	}
+	otherRequest := httptest.NewRequest(http.MethodGet, "/api/profiles", nil)
+	otherRequest.Header.Set("X-Session-ID", "other")
+	otherResponse := httptest.NewRecorder()
+	h.ServeHTTP(otherResponse, otherRequest)
+	var other map[string]any
+	if err := json.Unmarshal(otherResponse.Body.Bytes(), &other); err != nil {
+		t.Fatal(err)
+	}
+	if len(other["profiles"].([]any)) != 2 || other["active_profile_id"] != "barista" {
+		t.Fatalf("other=%v", other)
+	}
+}

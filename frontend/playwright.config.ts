@@ -4,7 +4,7 @@ export default defineConfig({
   testDir: "./e2e",
   // Legacy strategy/summary/branching scenarios stay in e2e as references,
   // but the active product contract is the project-memory flow.
-  testMatch: "**/memory.spec.mjs",
+  testMatch: ["**/memory.spec.mjs", "**/profiles.spec.mjs"],
   timeout: 30_000,
   fullyParallel: false,
   use: {

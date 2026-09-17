@@ -185,6 +185,8 @@ function projectDialog(value: unknown): JSONRecord | null {
 }
 
 function projectSuccess(method: string, path: string, value: unknown): unknown | null {
+  if (path === "/api/profiles" && (method === "GET" || method === "POST")) return projectProfiles(value);
+  if (/^\/api\/profiles\/[^/]+\/select$/.test(path) && method === "POST") return projectProfiles(value);
   if (path === "/api/projects" && method === "GET") return projectProjectList(value);
   if (path === "/api/projects" && method === "POST") return projectProjectList(value) ?? projectProject(value);
   if (path.startsWith("/api/projects/")) {
@@ -204,6 +206,23 @@ function projectSuccess(method: string, path: string, value: unknown): unknown |
   if (path === "/api/dialogs" || path.startsWith("/api/dialogs/")) return projectDialog(value);
   if (path.startsWith("/api/admin/logs")) return projectLogs(value);
   return value;
+}
+
+function projectProfile(value: unknown): JSONRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as JSONRecord;
+  if (!only(item, ["id", "name", "style", "constraints", "additional_context", "built_in"]) || !string(item.id) || !string(item.name) || typeof item.style !== "string" || typeof item.constraints !== "string" || typeof item.additional_context !== "string" || typeof item.built_in !== "boolean") return null;
+  return item;
+}
+
+function projectProfiles(value: unknown): JSONRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as JSONRecord;
+  if (!only(item, ["profiles", "active_profile_id"]) || !Array.isArray(item.profiles) || !string(item.active_profile_id)) return null;
+  const profiles = item.profiles.map(projectProfile);
+  if (!profiles.every((profile): profile is JSONRecord => profile !== null)) return null;
+  if (!profiles.some((profile) => profile.id === item.active_profile_id)) return null;
+  return { profiles, active_profile_id: item.active_profile_id };
 }
 
 function projectMemory(value: unknown): JSONRecord | null {
@@ -340,6 +359,24 @@ export async function selectBranch(request: Request, id: string, branchID: strin
 export async function compactDialog(request: Request, id: string): Promise<Response> { return forward(request, "POST", `/api/dialogs/${encodeURIComponent(id)}/compact`); }
 
 export async function listProjects(request: Request): Promise<Response> { return forward(request, "GET", "/api/projects"); }
+export async function listProfiles(request: Request): Promise<Response> { return forward(request, "GET", "/api/profiles"); }
+export async function createProfile(request: Request): Promise<Response> {
+  const body = await readJSON(request);
+  const name = body?.name;
+  const style = body?.style;
+  const constraints = body?.constraints;
+  const additionalContext = body?.additional_context;
+  if (!body || !only(body, ["name", "style", "constraints", "additional_context"]) || typeof name !== "string" || !name.trim() || [...name.trim()].length > 60 || typeof style !== "string" || !style.trim() || typeof constraints !== "string" || !constraints.trim() || typeof additionalContext !== "string" || !additionalContext.trim()) return validationFailure(request, crypto.randomUUID());
+  return forward(request, "POST", "/api/profiles", { name: name.trim(), style, constraints, additional_context: additionalContext });
+}
+export async function selectProfile(request: Request, profileID: string): Promise<Response> {
+  if (!profileID.trim()) return validationFailure(request, crypto.randomUUID());
+  return forward(request, "POST", `/api/profiles/${encodeURIComponent(profileID)}/select`);
+}
+export async function deleteProfile(request: Request, profileID: string): Promise<Response> {
+  if (!profileID.trim()) return validationFailure(request, crypto.randomUUID());
+  return forward(request, "DELETE", `/api/profiles/${encodeURIComponent(profileID)}`);
+}
 export async function createProject(request: Request): Promise<Response> {
   const body = await readJSON(request);
   if (!body || !only(body, ["title"]) || (body.title !== undefined && !text(body.title))) return validationFailure(request, crypto.randomUUID());
