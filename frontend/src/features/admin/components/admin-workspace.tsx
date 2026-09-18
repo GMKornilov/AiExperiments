@@ -9,8 +9,8 @@ import styles from "@/app/admin/page.module.css";
 
 export function AdminWorkspace() {
   const [onlyLLM, setOnlyLLM] = useState(true);
-  const [dialogID, setDialogID] = useState("");
-  const [activeID, setActiveID] = useState("");
+  const [chatID, setChatID] = useState("");
+  const [activeChatID, setActiveChatID] = useState("");
   const [data, setData] = useState<AdminLogsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const revision = useRef(0);
@@ -27,17 +27,17 @@ export function AdminWorkspace() {
   }
 
   useEffect(() => {
-    if (!activeID) return;
-    const timer = window.setInterval(() => { void load(activeID, "poll"); }, 5000);
+    if (!activeChatID) return;
+    const timer = window.setInterval(() => { void load(activeChatID, "poll"); }, 5000);
     return () => window.clearInterval(timer);
-  }, [activeID]);
+  }, [activeChatID]);
 
   const logs = [...(data?.logs ?? [])].filter(log => !onlyLLM || log.call_id).sort((left, right) => left.timestamp.localeCompare(right.timestamp));
   return <main className={styles.page}>
     <Link href="/" className={styles.back}>← К чату</Link>
-    <h1>Журнал диалога</h1><p>Введите точный ID диалога. Список доступных ID не показывается.</p>
-    <form onSubmit={(event: FormEvent) => { event.preventDefault(); const id = dialogID.trim(); if (!id) return; setActiveID(id); void load(id, "lookup"); }}>
-      <label htmlFor="dialog-id">ID диалога</label><div className={styles.controls}><input id="dialog-id" value={dialogID} onChange={(event) => setDialogID(event.target.value)} required /><button type="submit">Найти</button><button type="button" onClick={() => activeID && void load(activeID, "refresh")} disabled={!activeID}>Обновить</button></div>
+    <h1>Журнал чата</h1><p>Введите точный ID чата. Список доступных ID не показывается.</p>
+    <form onSubmit={(event: FormEvent) => { event.preventDefault(); const id = chatID.trim(); if (!id) return; setActiveChatID(id); void load(id, "lookup"); }}>
+      <label htmlFor="chat-id">ID чата</label><div className={styles.controls}><input id="chat-id" value={chatID} onChange={(event) => setChatID(event.target.value)} required /><button type="submit">Найти</button><button type="button" onClick={() => activeChatID && void load(activeChatID, "refresh")} disabled={!activeChatID}>Обновить</button></div>
     </form>
     {error && <p role="alert" className={styles.error}>{error}</p>}
     {data && !data.found && <p className={styles.notFound}>Данные не найдены.</p>}

@@ -19,6 +19,7 @@ import (
 	"aichallenge/week_1/task_1/internal/httpapi"
 	"aichallenge/week_1/task_1/internal/llm"
 	"aichallenge/week_1/task_1/internal/memory"
+	"aichallenge/week_1/task_1/internal/observability"
 )
 
 func main() {
@@ -47,7 +48,8 @@ func main() {
 		os.Exit(1)
 	}
 	defer store.Close()
-	server := &http.Server{Addr: cfg.Addr, Handler: httpapi.NewMemory(store)}
+	journal := observability.NewJournal(cfg.LogTextPayloads, logger)
+	server := &http.Server{Addr: cfg.Addr, Handler: httpapi.NewMemory(store, journal)}
 	if err := serve(server, store.Close); err != nil {
 		logger.Error("barista.server", "source", "backend", "event", "server", "result", "failure", "correlation_id", requestID, "error_category", "network")
 		os.Exit(1)

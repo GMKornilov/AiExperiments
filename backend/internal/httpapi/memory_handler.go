@@ -12,12 +12,18 @@ import (
 	"aichallenge/week_1/task_1/internal/agent"
 	"aichallenge/week_1/task_1/internal/llm"
 	"aichallenge/week_1/task_1/internal/memory"
+	"aichallenge/week_1/task_1/internal/observability"
 )
 
 // NewMemory exposes the project and three-layer-memory browser contract.
-func NewMemory(store *memory.Store) http.Handler { return &memoryHandler{store: store} }
+func NewMemory(store *memory.Store, journal *observability.Journal) http.Handler {
+	return &memoryHandler{store: store, journal: journal}
+}
 
-type memoryHandler struct{ store *memory.Store }
+type memoryHandler struct {
+	store   *memory.Store
+	journal *observability.Journal
+}
 type memoryStatusWriter struct {
 	http.ResponseWriter
 	status int
@@ -68,6 +74,9 @@ func (h *memoryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		slog.Info("barista.memory_request", "source", "backend", "event", "memory_request", "result", result, "error_category", category, "correlation_id", llm.RequestID(ctx), "project_id", projectID, "chat_id", chatID, "duration_ms", time.Since(started).Milliseconds(), "path", r.URL.Path, "method", r.Method)
+		if chatID != "" {
+			h.journal.Log(observability.Record{Source: "backend", Event: "http_request", Result: result, CorrelationID: llm.RequestID(ctx), DialogID: chatID, DurationMS: time.Since(started).Milliseconds(), ErrorCategory: category}, "")
+		}
 	}()
 	w = writer
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -82,6 +91,13 @@ func (h *memoryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.store.StorageError() != nil {
 		failMemory(w, http.StatusServiceUnavailable, "storage")
+		return
+	}
+	if r.URL.Path == "/api/admin/logs" {
+		if r.URL.Query().Get("action") != "poll" && h.store.HasChat(r.URL.Query().Get("dialog_id")) {
+			chatID = r.URL.Query().Get("dialog_id")
+		}
+		h.admin(w, r)
 		return
 	}
 	sid := strings.TrimSpace(r.Header.Get("X-Session-ID"))
@@ -143,6 +159,19 @@ func (h *memoryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	cid := parts[2]
 	chatID = cid
+	r = r.WithContext(llm.WithTrace(r.Context(), func(traceCtx context.Context, trace llm.Trace) {
+		result := "success"
+		if trace.Event == "llm_request" {
+			result = "started"
+		}
+		if trace.ErrorCategory != "" {
+			result = "failure"
+		}
+		h.journal.Log(observability.Record{Source: "backend", Event: trace.Event, Result: result,
+			CorrelationID: llm.RequestID(traceCtx), DialogID: cid, CallID: trace.CallID, Purpose: trace.Purpose,
+			Payload: trace.Payload, HTTPStatus: trace.HTTPStatus, DurationMS: trace.DurationMS,
+			ErrorCategory: trace.ErrorCategory, Truncated: trace.Truncated}, "")
+	}))
 	if len(parts) == 3 {
 		h.chat(w, r, sid, pid, cid)
 		return
@@ -155,11 +184,41 @@ func (h *memoryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.send(w, r, sid, pid, cid)
 		return
 	}
+	if len(parts) == 5 && parts[3] == "tasks" && parts[4] == "input" {
+		h.taskInput(w, r, sid, pid, cid)
+		return
+	}
+	if len(parts) == 6 && parts[3] == "tasks" && parts[5] == "pause" {
+		h.pauseTask(w, r, sid, pid, cid, parts[4])
+		return
+	}
+	if len(parts) == 6 && parts[3] == "tasks" && parts[5] == "resume" {
+		h.resumeTask(w, r, sid, pid, cid, parts[4])
+		return
+	}
 	if len(parts) == 6 && parts[3] == "messages" && parts[5] == "retry" {
 		h.retry(w, r, sid, pid, cid, parts[4])
 		return
 	}
 	http.NotFound(w, r)
+}
+
+func (h *memoryHandler) admin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		method(w, http.MethodGet)
+		return
+	}
+	id := strings.TrimSpace(r.URL.Query().Get("dialog_id"))
+	action := r.URL.Query().Get("action")
+	if action != "lookup" && action != "refresh" && action != "poll" {
+		failMemory(w, http.StatusBadRequest, "validation")
+		return
+	}
+	found := h.store.HasChat(id)
+	if action != "poll" && found {
+		h.journal.Log(observability.Record{Source: "backend", Event: "admin_" + action, Result: "success", CorrelationID: llm.RequestID(r.Context()), DialogID: id}, "")
+	}
+	writeMemory(w, map[string]any{"found": found, "log_text_payloads": h.journal.LogTextPayloads(), "logs": h.journal.Logs(id)})
 }
 
 func (h *memoryHandler) profiles(w http.ResponseWriter, r *http.Request, sid string) {
@@ -346,6 +405,84 @@ func (h *memoryHandler) send(w http.ResponseWriter, r *http.Request, sid, pid, c
 		return
 	}
 	writeMemory(w, c)
+}
+
+func (h *memoryHandler) taskInput(w http.ResponseWriter, r *http.Request, sid, pid, cid string) {
+	if r.Method != http.MethodPost {
+		method(w, http.MethodPost)
+		return
+	}
+	var payload struct {
+		Text            string `json:"text"`
+		CandidateTaskID string `json:"candidate_task_id"`
+	}
+	if !decode(w, r, &payload) {
+		failMemory(w, http.StatusBadRequest, "validation")
+		return
+	}
+	chat, candidates, err := h.store.TaskInput(r.Context(), sid, pid, cid, payload.Text, payload.CandidateTaskID)
+	if err != nil {
+		slog.Warn("barista.task", "source", "backend", "event", "task_input", "result", "failure", "error_category", taskErrorCategory(err), "correlation_id", llm.RequestID(r.Context()), "project_id", pid, "chat_id", cid)
+		memoryError(w, err)
+		return
+	}
+	event := "task_step"
+	if len(candidates) > 1 {
+		event = "task_candidates"
+	}
+	slog.Info("barista.task", "source", "backend", "event", event, "result", "success", "correlation_id", llm.RequestID(r.Context()), "project_id", pid, "chat_id", cid)
+	writeMemory(w, map[string]any{"chat": chat, "candidates": candidates})
+}
+
+func (h *memoryHandler) pauseTask(w http.ResponseWriter, r *http.Request, sid, pid, cid, taskID string) {
+	if r.Method != http.MethodPost {
+		method(w, http.MethodPost)
+		return
+	}
+	chat, err := h.store.PauseTask(sid, pid, cid, taskID)
+	if err != nil {
+		memoryError(w, err)
+		return
+	}
+	slog.Info("barista.task", "source", "backend", "event", "task_paused", "result", "success", "correlation_id", llm.RequestID(r.Context()), "project_id", pid, "chat_id", cid, "task_id", taskID)
+	writeMemory(w, map[string]any{"chat": chat})
+}
+
+func (h *memoryHandler) resumeTask(w http.ResponseWriter, r *http.Request, sid, pid, cid, taskID string) {
+	if r.Method != http.MethodPost {
+		method(w, http.MethodPost)
+		return
+	}
+	var payload struct {
+		Text string `json:"text"`
+	}
+	if !decode(w, r, &payload) {
+		failMemory(w, http.StatusBadRequest, "validation")
+		return
+	}
+	if strings.TrimSpace(payload.Text) == "" {
+		payload.Text = "Продолжить сохранённый шаг задачи."
+	}
+	chat, candidates, err := h.store.TaskInput(r.Context(), sid, pid, cid, payload.Text, taskID)
+	if err != nil {
+		memoryError(w, err)
+		return
+	}
+	slog.Info("barista.task", "source", "backend", "event", "task_resumed", "result", "success", "correlation_id", llm.RequestID(r.Context()), "project_id", pid, "chat_id", cid, "task_id", taskID)
+	writeMemory(w, map[string]any{"chat": chat, "candidates": candidates})
+}
+
+func taskErrorCategory(err error) string {
+	if errors.Is(err, memory.ErrStorage) {
+		return "storage"
+	}
+	if strings.Contains(err.Error(), "validation") {
+		return "validation"
+	}
+	if strings.Contains(err.Error(), "not found") {
+		return "not_found"
+	}
+	return "provider"
 }
 func (h *memoryHandler) memory(w http.ResponseWriter, r *http.Request, sid, pid string) {
 	if r.Method != http.MethodGet {

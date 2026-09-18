@@ -42,7 +42,82 @@ type Chat struct {
 	UpdatedAt           time.Time `json:"updated_at"`
 	MemoryStatus        string    `json:"memory_status"`
 	MemoryErrorCategory string    `json:"memory_error_category,omitempty"`
+	Tasks               []Task    `json:"tasks"`
 }
+
+// TaskStage is a deliberately closed set of task workflow stages.
+type TaskStage string
+
+const (
+	TaskStageClarifyInput      TaskStage = "clarify_input"
+	TaskStageResearchInputData TaskStage = "research_input_data"
+	TaskStageExecution         TaskStage = "execution"
+	TaskStageUserFeedback      TaskStage = "user_feedback"
+)
+
+// TaskStatus is a lifecycle state, distinct from TaskStage.
+type TaskStatus string
+
+const (
+	TaskStatusActive TaskStatus = "active"
+	TaskStatusPaused TaskStatus = "paused"
+	TaskStatusDone   TaskStatus = "done"
+
+	clarificationStep           = "Сформулировать понимание задачи и запросить подтверждение или недостающие данные"
+	clarificationExpectedAction = "user: подтвердить цель или ответить на вопросы доуточнения"
+)
+
+// TaskPlanItemStatus is the deliberately closed lifecycle of one subject-level
+// item in a task plan. It is independent from TaskStage: a single stage may
+// require several plan items and one item may require several task steps.
+type TaskPlanItemStatus string
+
+const (
+	TaskPlanItemPending   TaskPlanItemStatus = "pending"
+	TaskPlanItemCurrent   TaskPlanItemStatus = "current"
+	TaskPlanItemCompleted TaskPlanItemStatus = "completed"
+)
+
+// TaskPlanItem is a durable, user-visible unit of work. Stage is explanatory
+// only; an empty value intentionally does not affect the state machine.
+type TaskPlanItem struct {
+	ID     string             `json:"id"`
+	Title  string             `json:"title"`
+	Status TaskPlanItemStatus `json:"status"`
+	Stage  TaskStage          `json:"stage,omitempty"`
+}
+
+const clarificationInstruction = "TASK WORKFLOW — CLARIFY INPUT: это этап обязательного доуточнения. " +
+	"Сформулируй, как ты понял запрос, и запроси подтверждение цели либо конкретные недостающие данные. " +
+	"Не начинай исследование, подбор, расчёты, рецепт или иной рабочий результат; дождись содержательного ответа пользователя."
+
+// Task is a browser-session and chat-scoped durable unit of work.
+type Task struct {
+	ID              string         `json:"id"`
+	Title           string         `json:"title"`
+	Description     string         `json:"description"`
+	Stage           TaskStage      `json:"stage"`
+	CurrentStep     string         `json:"current_step"`
+	ExpectedAction  string         `json:"expected_action"`
+	Status          TaskStatus     `json:"status"`
+	Plan            []TaskPlanItem `json:"plan"`
+	CurrentPlanItem string         `json:"current_plan_item,omitempty"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+}
+
+func (s TaskStage) Valid() bool {
+	return s == TaskStageClarifyInput || s == TaskStageResearchInputData || s == TaskStageExecution || s == TaskStageUserFeedback
+}
+
+func (s TaskStatus) Valid() bool {
+	return s == TaskStatusActive || s == TaskStatusPaused || s == TaskStatusDone
+}
+
+func (s TaskPlanItemStatus) Valid() bool {
+	return s == TaskPlanItemPending || s == TaskPlanItemCurrent || s == TaskPlanItemCompleted
+}
+
 type Project struct {
 	ID        string    `json:"id"`
 	Title     string    `json:"title"`
@@ -98,6 +173,7 @@ type browser struct {
 	SelectedProjectID string              `json:"selected_project_id"`
 	SelectedChatID    string              `json:"selected_chat_id"`
 	PendingChatID     string              `json:"-"`
+	pendingCancel     context.CancelFunc  `json:"-"`
 	Profiles          map[string]*profile `json:"profiles"`
 	ActiveProfileID   string              `json:"active_profile_id"`
 }
@@ -128,6 +204,8 @@ type chat struct {
 	UpdatedAt     time.Time          `json:"updated_at"`
 	Status        string             `json:"memory_status"`
 	ErrorCategory string             `json:"memory_error_category,omitempty"`
+	Tasks         map[string]*Task   `json:"tasks"`
+	TaskInputs    map[string]string  `json:"task_inputs,omitempty"`
 }
 type Store struct {
 	mu         sync.Mutex
@@ -170,7 +248,7 @@ func Open(provider agent.Provider, path string, loader func() (agent.DialogSnaps
 		return nil, ErrStorage
 	}
 	var d diskState
-	if json.Unmarshal(data, &d) != nil || (d.Version != 3 && d.Version != 4) || d.Sessions == nil {
+	if json.Unmarshal(data, &d) != nil || (d.Version != 3 && d.Version != 4 && d.Version != 5) || d.Sessions == nil {
 		// The memory model intentionally has no migration from the legacy dialog format.
 		// Drop the associated legacy dialog directory as part of the explicit reset.
 		if removeErr := os.RemoveAll(legacyDialogDirectory(path)); removeErr != nil {
@@ -191,6 +269,43 @@ func Open(provider agent.Provider, path string, loader func() (agent.DialogSnaps
 			p.Facts = cloneFacts(p.Facts)
 			b.GlobalFacts = cloneFacts(b.GlobalFacts)
 			for _, c := range p.Chats {
+				if c.Tasks == nil {
+					c.Tasks = map[string]*Task{}
+					changed = true
+				}
+				if c.TaskInputs == nil {
+					c.TaskInputs = map[string]string{}
+					changed = true
+				}
+				for taskID, task := range c.Tasks {
+					if task == nil || task.ID != taskID || !task.Stage.Valid() || !task.Status.Valid() {
+						return nil, ErrStorage
+					}
+					// Tasks created before the clarification gate could be persisted
+					// between creation and their first model response. Make that
+					// recoverable state wait for the user instead of executing work.
+					if task.Stage == TaskStageClarifyInput && task.ExpectedAction == "agent" {
+						task.CurrentStep = clarificationStep
+						task.ExpectedAction = clarificationExpectedAction
+						changed = true
+					}
+					if task.Plan == nil {
+						task.Plan = []TaskPlanItem{}
+						changed = true
+					}
+					// Plans were introduced after tasks had already been persisted.
+					// A pre-confirmation clarification is intentionally plan-less;
+					// every later legacy state receives the smallest valid plan that
+					// represents its already-confirmed progress.
+					if len(task.Plan) == 0 && task.Stage != TaskStageClarifyInput {
+						initializePlan(task)
+						alignPlanWithTask(task)
+						changed = true
+					}
+					if err := validateTaskPlan(task); err != nil {
+						return nil, ErrStorage
+					}
+				}
 				if c.TitleStatus == "" {
 					if len(c.Messages) == 0 {
 						c.TitleStatus = "idle"
@@ -250,6 +365,10 @@ func (s *Store) Close() {
 	s.mu.Lock()
 	s.closed = true
 	for _, b := range s.sessions {
+		if b.pendingCancel != nil {
+			b.pendingCancel()
+			b.pendingCancel = nil
+		}
 		for _, p := range b.Projects {
 			for _, c := range p.Chats {
 				if c.titleCancel != nil {
@@ -542,7 +661,7 @@ func (s *Store) CreateChat(sid, pid, title string) (Chat, error) {
 	if strings.TrimSpace(title) == "" {
 		title = "Новый чат"
 	}
-	c := &chat{ID: i, Title: title, TitleStatus: "idle", Messages: []Message{}, CreatedAt: now, UpdatedAt: now, Status: "idle"}
+	c := &chat{ID: i, Title: title, TitleStatus: "idle", Messages: []Message{}, Tasks: map[string]*Task{}, TaskInputs: map[string]string{}, CreatedAt: now, UpdatedAt: now, Status: "idle"}
 	p.Chats[i] = c
 	p.UpdatedAt = now
 	b := s.get(sid)
@@ -561,6 +680,25 @@ func (s *Store) GetChat(sid, pid, cid string) (Chat, bool) {
 		return Chat{}, false
 	}
 	return copyChat(p.Chats[cid], pid), true
+}
+
+// HasChat reports whether a chat ID exists in any browser project. It is used
+// by the admin journal lookup, which deliberately accepts an exact chat ID
+// without requiring the browser session that owns it.
+func (s *Store) HasChat(cid string) bool {
+	if strings.TrimSpace(cid) == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, b := range s.sessions {
+		for _, p := range b.Projects {
+			if p.Chats[cid] != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 func (s *Store) SelectChat(sid, pid, cid string) error {
 	s.mu.Lock()
@@ -638,6 +776,14 @@ func (s *Store) ClearProject(sid, pid string) error {
 	return s.saveLocked()
 }
 func (s *Store) Send(ctx context.Context, sid, pid, cid, clientID, text string) (Chat, error) {
+	return s.send(ctx, sid, pid, cid, clientID, text, "")
+}
+
+// send executes one chat turn. taskInstruction is an internal, stage-bound
+// constraint and is never persisted as user content.
+func (s *Store) send(ctx context.Context, sid, pid, cid, clientID, text, taskInstruction string) (Chat, error) {
+	mainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.snapshot.Chat.Timeout)
+	defer cancel()
 	s.mu.Lock()
 	if e := s.available(); e != nil {
 		s.mu.Unlock()
@@ -666,22 +812,25 @@ func (s *Store) Send(ctx context.Context, sid, pid, cid, clientID, text string) 
 		}
 	}
 	b.PendingChatID = cid
+	b.pendingCancel = cancel
 	p.Status = "updating"
 	c.Status = "updating"
 	mainMessages := s.mainPromptLocked(b, p, c, text)
+	if taskInstruction != "" {
+		mainMessages[0].Content += "\n\n" + taskInstruction
+	}
 	s.mu.Unlock()
 	mainStarted := time.Now()
-	mainCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.snapshot.Chat.Timeout)
 	answer, err := s.provider.Complete(llm.WithPurpose(mainCtx, "chat"), s.snapshot.Chat, mainMessages)
 	if err == nil && mainCtx.Err() != nil {
 		err = mainCtx.Err()
 	}
-	cancel()
 	if err != nil {
 		s.mu.Lock()
 		b := s.sessions[sid]
 		if b != nil {
 			b.PendingChatID = ""
+			b.pendingCancel = nil
 		}
 		p := s.project(sid, pid)
 		if p != nil && p.Chats[cid] != nil {
@@ -698,7 +847,11 @@ func (s *Store) Send(ctx context.Context, sid, pid, cid, clientID, text string) 
 				return Chat{}, saveErr
 			}
 		}
-		slog.Warn("barista.main_chat", "result", "failure", "error_category", category(err), "project_id", pid, "chat_id", cid, "correlation_id", llm.RequestID(ctx), "duration_ms", time.Since(mainStarted).Milliseconds())
+		if errors.Is(err, context.Canceled) {
+			slog.Info("barista.main_chat", "result", "cancelled", "project_id", pid, "chat_id", cid, "correlation_id", llm.RequestID(ctx), "duration_ms", time.Since(mainStarted).Milliseconds())
+		} else {
+			slog.Warn("barista.main_chat", "result", "failure", "error_category", category(err), "project_id", pid, "chat_id", cid, "correlation_id", llm.RequestID(ctx), "duration_ms", time.Since(mainStarted).Milliseconds())
+		}
 		s.mu.Unlock()
 		return Chat{}, err
 	}
@@ -711,7 +864,7 @@ func (s *Store) Send(ctx context.Context, sid, pid, cid, clientID, text string) 
 	payload := s.extractorPayloadLocked(b, p, c, text, answer)
 	s.mu.Unlock()
 	extractStarted := time.Now()
-	facts, extractErr := s.extract(ctx, payload)
+	facts, extractErr := s.extract(mainCtx, payload)
 	s.mu.Lock()
 	b = s.sessions[sid]
 	p = s.project(sid, pid)
@@ -720,6 +873,7 @@ func (s *Store) Send(ctx context.Context, sid, pid, cid, clientID, text string) 
 	}
 	c = p.Chats[cid]
 	b.PendingChatID = ""
+	b.pendingCancel = nil
 	now := time.Now()
 	c.Messages = append(c.Messages, Message{ID: mustID(), ClientID: clientID, Role: "user", Text: text, CreatedAt: now, Status: "success"}, Message{ID: mustID(), Role: "assistant", Text: answer, CreatedAt: now, Status: "success"})
 	c.UpdatedAt = now
@@ -854,6 +1008,434 @@ func (s *Store) Retry(ctx context.Context, sid, pid, cid, messageID string) (Cha
 	return s.Send(ctx, sid, pid, cid, message.ClientID, message.Text)
 }
 
+// TaskInput routes an input to one unfinished task, or creates a task when it
+// does not match an existing one. If routing is ambiguous it returns candidates
+// without starting an LLM attempt.
+func (s *Store) TaskInput(ctx context.Context, sid, pid, cid, text, candidateID string) (Chat, []Task, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return Chat{}, nil, fmt.Errorf("validation")
+	}
+	s.mu.Lock()
+	if err := s.available(); err != nil {
+		s.mu.Unlock()
+		return Chat{}, nil, err
+	}
+	p := s.project(sid, pid)
+	if p == nil || p.Chats[cid] == nil {
+		s.mu.Unlock()
+		return Chat{}, nil, fmt.Errorf("not found")
+	}
+	c := p.Chats[cid]
+	if c.Tasks == nil {
+		c.Tasks = map[string]*Task{}
+	}
+	if c.TaskInputs == nil {
+		c.TaskInputs = map[string]string{}
+	}
+	var selected *Task
+	created := false
+	if candidateID != "" {
+		selected = c.Tasks[candidateID]
+		if selected == nil || selected.Status == TaskStatusDone {
+			s.mu.Unlock()
+			return Chat{}, nil, fmt.Errorf("not found")
+		}
+	} else {
+		paused := unfinishedTasks(c, TaskStatusPaused)
+		if len(paused) == 1 {
+			selected = c.Tasks[paused[0].ID]
+		} else {
+			matches := matchingTasks(c, text)
+			if len(matches) > 1 {
+				out := copyChat(c, pid)
+				s.mu.Unlock()
+				return out, matches, nil
+			}
+			if len(matches) == 1 {
+				selected = c.Tasks[matches[0].ID]
+			}
+		}
+	}
+	if selected == nil {
+		newID, err := id()
+		if err != nil {
+			s.mu.Unlock()
+			return Chat{}, nil, err
+		}
+		now := time.Now()
+		selected = &Task{ID: newID, Title: taskTitle(text), Description: taskDescription(text), Stage: TaskStageClarifyInput, CurrentStep: clarificationStep, ExpectedAction: clarificationExpectedAction, Status: TaskStatusActive, Plan: []TaskPlanItem{}, CreatedAt: now, UpdatedAt: now}
+		c.Tasks[newID] = selected
+		c.TaskInputs[newID] = text
+		created = true
+		if err := s.saveLocked(); err != nil {
+			s.mu.Unlock()
+			return Chat{}, nil, err
+		}
+	}
+	if selected.Status == TaskStatusPaused {
+		selected.Status = TaskStatusActive
+		selected.UpdatedAt = time.Now()
+	}
+	resume := text == "Продолжить сохранённый шаг." || text == "Продолжить сохранённый шаг задачи."
+	if resume {
+		text = c.TaskInputs[selected.ID]
+		if text == "" {
+			text = selected.CurrentStep
+		}
+	} else {
+		c.TaskInputs[selected.ID] = text
+	}
+	feedbackRevision := false
+	if selected.Stage == TaskStageUserFeedback {
+		if positiveFeedback(text) {
+			selected.Status = TaskStatusDone
+			selected.ExpectedAction = "none"
+			alignPlanWithTask(selected)
+			if err := validateTaskPlan(selected); err != nil {
+				s.mu.Unlock()
+				return Chat{}, nil, err
+			}
+			selected.UpdatedAt = time.Now()
+			if err := s.saveLocked(); err != nil {
+				s.mu.Unlock()
+				return Chat{}, nil, err
+			}
+			out := copyChat(c, pid)
+			s.mu.Unlock()
+			return out, nil, nil
+		}
+		// Do not expose a proposed correction item to Pause or a restart. It
+		// becomes part of the durable plan only with the successful task step.
+		feedbackRevision = true
+	}
+	taskInstruction := ""
+	if selected.Stage == TaskStageClarifyInput {
+		taskInstruction = clarificationInstruction
+	}
+	s.mu.Unlock()
+
+	// Send is the existing atomic chat+memory operation. The task transition is
+	// committed only after it reports a fully successful memory update.
+	clientID := "task-" + mustID()
+	out, err := s.send(ctx, sid, pid, cid, clientID, text, taskInstruction)
+	if err != nil {
+		// Pause durably wins over an in-flight provider failure. send records a
+		// failed user attempt for ordinary failures, so remove only that attempt
+		// after confirming that this exact task was paused. This prevents an
+		// intentional cancellation from becoming a retryable chat error while
+		// leaving unrelated provider failures visible.
+		if pausedChat, paused, pauseErr := s.pausedTaskAfterSendError(sid, pid, cid, selected.ID, clientID); pauseErr != nil {
+			return Chat{}, nil, pauseErr
+		} else if paused {
+			return pausedChat, nil, nil
+		}
+		return Chat{}, nil, err
+	}
+	if out.MemoryStatus != "success" {
+		return out, nil, fmt.Errorf("memory update not confirmed")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p = s.project(sid, pid)
+	if p == nil || p.Chats[cid] == nil || p.Chats[cid].Tasks[selected.ID] == nil {
+		return Chat{}, nil, fmt.Errorf("not found")
+	}
+	task := p.Chats[cid].Tasks[selected.ID]
+	if task.Status == TaskStatusPaused { // Pause won the race; retain the old step.
+		return copyChat(p.Chats[cid], pid), nil, nil
+	}
+	if feedbackRevision {
+		task.Stage = TaskStageExecution
+		task.CurrentStep = "Учесть обратную связь пользователя"
+		task.ExpectedAction = "agent"
+		activateFeedbackPlanItem(task)
+	}
+	// The initial request is never evidence that the user accepted the task
+	// framing. Keep the task in clarify_input until a later, substantive reply
+	// confirms the goal. Repeating a paused clarification step is also not a
+	// new confirmation.
+	if task.Stage != TaskStageClarifyInput || (!created && !resume && clarificationConfirmed(text)) {
+		if task.Stage == TaskStageClarifyInput {
+			initializePlan(task)
+		}
+		advanceTask(task)
+	}
+	if err := validateTaskPlan(task); err != nil {
+		return Chat{}, nil, err
+	}
+	task.UpdatedAt = time.Now()
+	p.Chats[cid].UpdatedAt = task.UpdatedAt
+	p.UpdatedAt = task.UpdatedAt
+	if err := s.saveLocked(); err != nil {
+		return Chat{}, nil, err
+	}
+	return copyChat(p.Chats[cid], pid), nil, nil
+}
+
+// pausedTaskAfterSendError returns the durable paused snapshot only when the
+// same task was paused while its provider request was in flight. It also rolls
+// back the error-only chat record that send creates for real provider failures.
+func (s *Store) pausedTaskAfterSendError(sid, pid, cid, taskID, clientID string) (Chat, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	p := s.project(sid, pid)
+	if p == nil || p.Chats[cid] == nil {
+		return Chat{}, false, nil
+	}
+	c := p.Chats[cid]
+	task := c.Tasks[taskID]
+	if task == nil || task.Status != TaskStatusPaused {
+		return Chat{}, false, nil
+	}
+
+	for i := len(c.Messages) - 1; i >= 0; i-- {
+		message := c.Messages[i]
+		if message.ClientID != clientID {
+			continue
+		}
+		if message.Role == "user" && message.Status == "error" {
+			c.Messages = append(c.Messages[:i], c.Messages[i+1:]...)
+		}
+		break
+	}
+	// A pause is an expected outcome, not a memory failure. The last durable
+	// state was confirmed before the request started, so expose it as healthy.
+	c.Status = "success"
+	c.ErrorCategory = ""
+	p.Status = "success"
+	p.ErrorCategory = ""
+	now := time.Now()
+	c.UpdatedAt = now
+	p.UpdatedAt = now
+	if err := s.saveLocked(); err != nil {
+		return Chat{}, false, err
+	}
+	return copyChat(c, pid), true, nil
+}
+
+// PauseTask cancels any active provider request and durably retains the last
+// confirmed state, so resume can repeat the same step.
+func (s *Store) PauseTask(sid, pid, cid, taskID string) (Chat, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.available(); err != nil {
+		return Chat{}, err
+	}
+	b := s.sessions[sid]
+	p := s.project(sid, pid)
+	if b == nil || p == nil || p.Chats[cid] == nil || p.Chats[cid].Tasks[taskID] == nil {
+		return Chat{}, fmt.Errorf("not found")
+	}
+	task := p.Chats[cid].Tasks[taskID]
+	if task.Status == TaskStatusDone {
+		return Chat{}, fmt.Errorf("validation")
+	}
+	task.Status = TaskStatusPaused
+	task.UpdatedAt = time.Now()
+	if b.PendingChatID == cid && b.pendingCancel != nil {
+		b.pendingCancel()
+	}
+	if err := s.saveLocked(); err != nil {
+		return Chat{}, err
+	}
+	return copyChat(p.Chats[cid], pid), nil
+}
+
+func unfinishedTasks(c *chat, status TaskStatus) []Task {
+	out := []Task{}
+	for _, task := range c.Tasks {
+		if task.Status == status {
+			out = append(out, *task)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
+	return out
+}
+
+func matchingTasks(c *chat, input string) []Task {
+	words := wordSet(input)
+	out := []Task{}
+	for _, task := range c.Tasks {
+		if task.Status == TaskStatusDone || task.Status == TaskStatusPaused {
+			continue
+		}
+		for word := range words {
+			if len([]rune(word)) > 2 && strings.Contains(strings.ToLower(task.Title+" "+task.Description), word) {
+				out = append(out, *task)
+				break
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
+	return out
+}
+
+func wordSet(value string) map[string]bool {
+	words := map[string]bool{}
+	for _, word := range strings.Fields(strings.ToLower(value)) {
+		word = strings.Trim(word, `.,!?;:"'()[]`)
+		if word != "" {
+			words[word] = true
+		}
+	}
+	return words
+}
+
+func taskTitle(text string) string { return truncateRunes(strings.Join(strings.Fields(text), " "), 60) }
+
+func taskDescription(text string) string {
+	return truncateRunes(strings.Join(strings.Fields(text), " "), 160)
+}
+
+func positiveFeedback(text string) bool {
+	value := strings.ToLower(strings.TrimSpace(text))
+	return strings.Contains(value, "спасибо") || strings.Contains(value, "подходит") ||
+		strings.Contains(value, "готово") || value == "да" || value == "ok" || value == "ок"
+}
+
+// clarificationConfirmed deliberately accepts only an explicit confirmation.
+// A factual reply can be incomplete, so it remains in clarify_input and gives
+// the model another turn to name the remaining data instead of starting work
+// from an assumption.
+func clarificationConfirmed(text string) bool {
+	value := strings.ToLower(strings.TrimSpace(text))
+	return value == "да" || value == "ок" || value == "ok" ||
+		strings.Contains(value, "подтверждаю") || strings.Contains(value, "всё верно") ||
+		strings.Contains(value, "все верно")
+}
+
+func advanceTask(task *Task) {
+	switch task.Stage {
+	case TaskStageClarifyInput:
+		task.Stage, task.CurrentStep, task.ExpectedAction = TaskStageResearchInputData, "Исследовать входные данные", "agent"
+	case TaskStageResearchInputData:
+		task.Stage, task.CurrentStep, task.ExpectedAction = TaskStageExecution, "Выполнить согласованный шаг", "agent"
+	case TaskStageExecution:
+		task.Stage, task.CurrentStep, task.ExpectedAction = TaskStageUserFeedback, "Ожидать обратную связь пользователя", "user"
+	}
+	alignPlanWithTask(task)
+}
+
+// initializePlan creates a small, durable subject plan without a second LLM
+// protocol. The titles are deliberately outcome-oriented rather than copies of
+// FSM stages; subsequent steps may refine pending items as facts become known.
+func initializePlan(task *Task) {
+	if len(task.Plan) != 0 {
+		return
+	}
+	task.Plan = []TaskPlanItem{
+		{ID: task.ID + "-research", Title: "Изучить исходные данные задачи", Status: TaskPlanItemPending, Stage: TaskStageResearchInputData},
+		{ID: task.ID + "-result", Title: "Подготовить решение задачи", Status: TaskPlanItemPending, Stage: TaskStageExecution},
+	}
+}
+
+func activateFeedbackPlanItem(task *Task) {
+	item := TaskPlanItem{
+		ID:     task.ID + "-feedback-" + mustID(),
+		Title:  "Учесть обратную связь пользователя",
+		Status: TaskPlanItemCurrent,
+		Stage:  TaskStageExecution,
+	}
+	task.Plan = append(task.Plan, item)
+	task.CurrentPlanItem = item.ID
+}
+
+// alignPlanWithTask commits plan progress together with a confirmed FSM
+// transition. It never rewrites a completed item's identifier or title.
+func alignPlanWithTask(task *Task) {
+	if len(task.Plan) == 0 {
+		task.CurrentPlanItem = ""
+		return
+	}
+	for index := range task.Plan {
+		task.Plan[index].Status = TaskPlanItemPending
+	}
+	switch task.Stage {
+	case TaskStageResearchInputData:
+		task.Plan[0].Status = TaskPlanItemCurrent
+		task.CurrentPlanItem = task.Plan[0].ID
+	case TaskStageExecution:
+		for index := range task.Plan {
+			if task.Plan[index].Stage == TaskStageResearchInputData {
+				task.Plan[index].Status = TaskPlanItemCompleted
+			}
+		}
+		current := -1
+		for index := range task.Plan {
+			if task.Plan[index].Status == TaskPlanItemPending {
+				current = index
+				break
+			}
+		}
+		if current >= 0 {
+			task.Plan[current].Status = TaskPlanItemCurrent
+			task.CurrentPlanItem = task.Plan[current].ID
+		} else {
+			task.CurrentPlanItem = ""
+		}
+	case TaskStageUserFeedback:
+		for index := range task.Plan {
+			task.Plan[index].Status = TaskPlanItemCompleted
+		}
+		task.CurrentPlanItem = ""
+	}
+	if task.Status == TaskStatusDone {
+		for index := range task.Plan {
+			task.Plan[index].Status = TaskPlanItemCompleted
+		}
+		task.CurrentPlanItem = ""
+	}
+}
+
+func validateTaskPlan(task *Task) error {
+	if task == nil {
+		return fmt.Errorf("validation")
+	}
+	if len(task.Plan) == 0 {
+		if task.CurrentPlanItem != "" || task.Stage != TaskStageClarifyInput {
+			return fmt.Errorf("validation")
+		}
+		return nil
+	}
+	ids := make(map[string]struct{}, len(task.Plan))
+	current := ""
+	for _, item := range task.Plan {
+		if strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.Title) == "" || !item.Status.Valid() || (item.Stage != "" && !item.Stage.Valid()) {
+			return fmt.Errorf("validation")
+		}
+		if _, exists := ids[item.ID]; exists {
+			return fmt.Errorf("validation")
+		}
+		ids[item.ID] = struct{}{}
+		if item.Status == TaskPlanItemCurrent {
+			if current != "" {
+				return fmt.Errorf("validation")
+			}
+			current = item.ID
+		}
+	}
+	if task.Status == TaskStatusDone || task.Stage == TaskStageUserFeedback {
+		if current != "" || task.CurrentPlanItem != "" {
+			return fmt.Errorf("validation")
+		}
+		for _, item := range task.Plan {
+			if item.Status != TaskPlanItemCompleted {
+				return fmt.Errorf("validation")
+			}
+		}
+		return nil
+	}
+	if task.Stage == TaskStageClarifyInput {
+		return fmt.Errorf("validation")
+	}
+	if current == "" || task.CurrentPlanItem != current {
+		return fmt.Errorf("validation")
+	}
+	return nil
+}
+
 type snapshots struct {
 	GlobalFacts  []string `json:"global_facts"`
 	ProjectFacts []string `json:"project_facts"`
@@ -950,6 +1532,8 @@ func (s *Store) saveLocked() error {
 	if s.path == "" {
 		return nil
 	}
+	// Task fields are additive and optional, so version 4 readers retain their
+	// safe behaviour while older histories decode with an empty task map.
 	data, e := json.MarshalIndent(diskState{Version: 4, Sessions: s.sessions}, "", "  ")
 	if e == nil {
 		e = replace(s.path, data)
@@ -982,7 +1566,14 @@ func replace(path string, data []byte) error {
 }
 func cloneFacts(v []string) []string { return append([]string{}, v...) }
 func copyChat(c *chat, pid string) Chat {
-	return Chat{ID: c.ID, ProjectID: pid, Title: c.Title, TitleStatus: c.TitleStatus, Messages: append([]Message{}, c.Messages...), CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, MemoryStatus: c.Status, MemoryErrorCategory: c.ErrorCategory}
+	tasks := make([]Task, 0, len(c.Tasks))
+	for _, task := range c.Tasks {
+		copy := *task
+		copy.Plan = append([]TaskPlanItem{}, task.Plan...)
+		tasks = append(tasks, copy)
+	}
+	sort.Slice(tasks, func(i, j int) bool { return tasks[i].UpdatedAt.After(tasks[j].UpdatedAt) })
+	return Chat{ID: c.ID, ProjectID: pid, Title: c.Title, TitleStatus: c.TitleStatus, Messages: append([]Message{}, c.Messages...), Tasks: tasks, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt, MemoryStatus: c.Status, MemoryErrorCategory: c.ErrorCategory}
 }
 func copyProject(p *project) Project {
 	o := Project{ID: p.ID, Title: p.Title, Chats: []Chat{}, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt}

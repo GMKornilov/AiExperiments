@@ -21,6 +21,8 @@ type scriptedProvider struct {
 	err         error
 	mainErr     bool
 	block       chan struct{}
+	blockMain   bool
+	respectCtx  bool
 	titleCalls  int
 	titleAnswer string
 	titleErr    error
@@ -36,7 +38,7 @@ func (p *scriptedProvider) reset(answers []string, err error, mainErr bool) {
 	p.mainErr = mainErr
 }
 
-func (p *scriptedProvider) Complete(_ context.Context, snap agent.Snapshot, m []llm.Message) (string, error) {
+func (p *scriptedProvider) Complete(ctx context.Context, snap agent.Snapshot, m []llm.Message) (string, error) {
 	if snap.Model == "text" {
 		p.mu.Lock()
 		p.titleCalls++
@@ -53,9 +55,18 @@ func (p *scriptedProvider) Complete(_ context.Context, snap agent.Snapshot, m []
 	p.mu.Lock()
 	p.calls = append(p.calls, append([]llm.Message{}, m...))
 	i := len(p.calls) - 1
+	block, blockMain, respectCtx := p.block, p.blockMain, p.respectCtx
 	p.mu.Unlock()
-	if p.block != nil && i == 1 {
-		<-p.block
+	if block != nil && ((blockMain && i == 0) || (!blockMain && i == 1)) {
+		if respectCtx {
+			select {
+			case <-block:
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		} else {
+			<-block
+		}
 	}
 	if p.err != nil && (i == 1 || (p.mainErr && i == 0)) {
 		return "", p.err
@@ -122,6 +133,229 @@ func TestSendWaitsForExtractorAndUsesMemoryPrompt(t *testing.T) {
 	}
 	if p.calls[0][0].Role != "system" || p.calls[0][1].Content != "I own a grinder" {
 		t.Fatalf("main prompt=%+v", p.calls[0])
+	}
+}
+
+func TestTaskInputRequiresClarificationBeforeAdvancingAndCompletesOnFeedback(t *testing.T) {
+	p := &scriptedProvider{answers: []string{
+		"answer-1", `{"global_facts":[],"project_facts":[]}`,
+		"answer-2", `{"global_facts":[],"project_facts":[]}`,
+		"answer-3", `{"global_facts":[],"project_facts":[]}`,
+		"answer-4", `{"global_facts":[],"project_facts":[]}`,
+		"answer-5", `{"global_facts":[],"project_facts":[]}`,
+	}}
+	s, sid, pid, cid := setup(t, p)
+	chat, candidates, err := s.TaskInput(context.Background(), sid, pid, cid, "Помоги настроить эспрессо", "")
+	if err != nil || len(candidates) != 0 || len(chat.Tasks) != 1 {
+		t.Fatalf("task input: chat=%#v candidates=%#v err=%v", chat, candidates, err)
+	}
+	task := chat.Tasks[0]
+	if task.Stage != TaskStageClarifyInput || task.ExpectedAction != clarificationExpectedAction || task.Status != TaskStatusActive {
+		t.Fatalf("unexpected first state: %#v", task)
+	}
+	p.mu.Lock()
+	firstPrompt := p.calls[0][0].Content
+	p.mu.Unlock()
+	if !strings.Contains(firstPrompt, "TASK WORKFLOW — CLARIFY INPUT") {
+		t.Fatalf("initial task turn did not constrain the model to clarification: %q", firstPrompt)
+	}
+	chat, _, err = s.TaskInput(context.Background(), sid, pid, cid, "давление 9 бар", task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task = chat.Tasks[0]
+	if task.Stage != TaskStageClarifyInput {
+		t.Fatalf("an unconfirmed factual reply must stay in clarification: %#v", task)
+	}
+	chat, _, err = s.TaskInput(context.Background(), sid, pid, cid, "да, всё верно", task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task = chat.Tasks[0]
+	if task.Stage != TaskStageResearchInputData || task.ExpectedAction != "agent" {
+		t.Fatalf("confirmed clarification must enter research: %#v", task)
+	}
+	if len(task.Plan) != 2 || task.CurrentPlanItem != task.Plan[0].ID || task.Plan[0].Status != TaskPlanItemCurrent || task.Plan[1].Status != TaskPlanItemPending {
+		t.Fatalf("confirmation must create a separate current atomic plan: %#v", task)
+	}
+	chat, _, err = s.TaskInput(context.Background(), sid, pid, cid, "зерно светлой обжарки", task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task = chat.Tasks[0]
+	if task.Stage != TaskStageExecution {
+		t.Fatalf("unexpected execution state: %#v", task)
+	}
+	if task.Plan[0].Status != TaskPlanItemCompleted || task.Plan[1].Status != TaskPlanItemCurrent || task.CurrentPlanItem != task.Plan[1].ID {
+		t.Fatalf("plan was not committed with research transition: %#v", task)
+	}
+	chat, _, err = s.TaskInput(context.Background(), sid, pid, cid, "подготовь рецепт", task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task = chat.Tasks[0]
+	if task.Stage != TaskStageUserFeedback || task.ExpectedAction != "user" {
+		t.Fatalf("unexpected feedback state: %#v", task)
+	}
+	if task.CurrentPlanItem != "" || task.Plan[0].Status != TaskPlanItemCompleted || task.Plan[1].Status != TaskPlanItemCompleted {
+		t.Fatalf("feedback must have no active plan item: %#v", task)
+	}
+	chat, _, err = s.TaskInput(context.Background(), sid, pid, cid, "подходит, спасибо", task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chat.Tasks[0].Status != TaskStatusDone || chat.Tasks[0].ExpectedAction != "none" {
+		t.Fatalf("done state: %#v", chat.Tasks[0])
+	}
+	if chat.Tasks[0].CurrentPlanItem != "" || chat.Tasks[0].Plan[0].Status != TaskPlanItemCompleted || chat.Tasks[0].Plan[1].Status != TaskPlanItemCompleted {
+		t.Fatalf("done task must complete its plan: %#v", chat.Tasks[0])
+	}
+}
+
+func TestTaskPlanRejectsInvalidPersistedSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	data := `{"version":4,"sessions":{"one":{"global_facts":[],"projects":{"p":{"project_facts":[],"chats":{"c":{"id":"c","tasks":{"t":{"id":"t","title":"Рецепт","description":"Рецепт","stage":"execution","current_step":"Шаг","expected_action":"agent","status":"active","current_plan_item":"same","plan":[{"id":"same","title":"Первый","status":"current"},{"id":"same","title":"Второй","status":"pending"}]}}}}}}}}}`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(&scriptedProvider{}, path, func() (agent.DialogSnapshot, error) { return snapshot(), nil }); !errors.Is(err, ErrStorage) {
+		t.Fatalf("invalid plan must be rejected, err=%v", err)
+	}
+}
+
+func TestTaskPlanPersistsAcrossRestartAndPause(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	p := &scriptedProvider{answers: []string{
+		"уточнение", `{"global_facts":[],"project_facts":[]}`,
+		"подтверждение", `{"global_facts":[],"project_facts":[]}`,
+	}}
+	s, sid, pid, cid := setup(t, p)
+	s.path = path
+	chat, _, err := s.TaskInput(context.Background(), sid, pid, cid, "Подобрать рецепт", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := chat.Tasks[0].ID
+	chat, _, err = s.TaskInput(context.Background(), sid, pid, cid, "да, всё верно", taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PauseTask(sid, pid, cid, taskID); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(p, path, func() (agent.DialogSnapshot, error) { return snapshot(), nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, ok := reopened.GetChat(sid, pid, cid)
+	if !ok || len(restored.Tasks) != 1 {
+		t.Fatalf("restored=%+v ok=%t", restored, ok)
+	}
+	task := restored.Tasks[0]
+	if task.Status != TaskStatusPaused || len(task.Plan) != 2 || task.CurrentPlanItem != task.Plan[0].ID || task.Plan[0].Status != TaskPlanItemCurrent {
+		t.Fatalf("paused plan was not restored: %#v", task)
+	}
+}
+
+func TestPausedClarificationResumeRepeatsStepWithoutConfirmingIt(t *testing.T) {
+	p := &scriptedProvider{answers: []string{
+		"уточнение", `{"global_facts":[],"project_facts":[]}`,
+		"повтор уточнения", `{"global_facts":[],"project_facts":[]}`,
+	}}
+	s, sid, pid, cid := setup(t, p)
+	chat, _, err := s.TaskInput(context.Background(), sid, pid, cid, "Подбери рецепт", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := chat.Tasks[0]
+	if _, err = s.PauseTask(sid, pid, cid, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	chat, _, err = s.TaskInput(context.Background(), sid, pid, cid, "Продолжить сохранённый шаг задачи.", task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task = chat.Tasks[0]
+	if task.Status != TaskStatusActive || task.Stage != TaskStageClarifyInput || task.ExpectedAction != clarificationExpectedAction {
+		t.Fatalf("resume must repeat, not confirm, clarification: %#v", task)
+	}
+}
+
+func TestTaskInputTreatsDurablePauseDuringProviderFailureAsExpected(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	p := &scriptedProvider{answers: []string{
+		"уточнение", `{"global_facts":[],"project_facts":[]}`,
+	}}
+	s, sid, pid, cid := setup(t, p)
+	s.path = path
+	chat, _, err := s.TaskInput(context.Background(), sid, pid, cid, "Подбери рецепт", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := chat.Tasks[0].ID
+
+	p.reset([]string{"не должен быть показан"}, errors.New("provider unavailable"), true)
+	p.mu.Lock()
+	p.block = make(chan struct{})
+	p.blockMain = true
+	p.respectCtx = true
+	p.mu.Unlock()
+	result := make(chan struct {
+		chat Chat
+		err  error
+	}, 1)
+	go func() {
+		out, _, inputErr := s.TaskInput(context.Background(), sid, pid, cid, "да, всё верно", taskID)
+		result <- struct {
+			chat Chat
+			err  error
+		}{chat: out, err: inputErr}
+	}()
+
+	deadline := time.After(time.Second)
+	for {
+		p.mu.Lock()
+		calls := len(p.calls)
+		p.mu.Unlock()
+		if calls == 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("task provider request was not started")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	if _, err := s.PauseTask(sid, pid, cid, taskID); err != nil {
+		t.Fatal(err)
+	}
+	paused := <-result
+	if paused.err != nil {
+		t.Fatalf("durable pause must suppress its cancelled provider error: %v", paused.err)
+	}
+	if paused.chat.MemoryStatus != "success" || len(paused.chat.Messages) != 2 {
+		t.Fatalf("pause must not expose error state or partial input: %#v", paused.chat)
+	}
+	if paused.chat.Tasks[0].Status != TaskStatusPaused {
+		t.Fatalf("task=%#v", paused.chat.Tasks[0])
+	}
+
+	reopened, err := Open(p, path, func() (agent.DialogSnapshot, error) { return snapshot(), nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, ok := reopened.GetChat(sid, pid, cid)
+	if !ok || len(restored.Messages) != 2 || restored.Tasks[0].Status != TaskStatusPaused || restored.MemoryStatus != "success" {
+		t.Fatalf("restart must retain clean paused snapshot: %#v", restored)
+	}
+}
+
+func TestTaskInputDoesNotSuppressProviderFailureWithoutPause(t *testing.T) {
+	p := &scriptedProvider{answers: []string{"ignored"}, err: errors.New("provider unavailable"), mainErr: true}
+	s, sid, pid, cid := setup(t, p)
+	if _, _, err := s.TaskInput(context.Background(), sid, pid, cid, "Подбери рецепт", ""); err == nil {
+		t.Fatal("provider error without a pause must be returned")
 	}
 }
 
@@ -212,6 +446,26 @@ func TestOpenMigratesVersionThreeProfiles(t *testing.T) {
 	}
 	if !strings.Contains(string(persisted), `"version": 4`) || strings.Contains(string(persisted), "key") {
 		t.Fatalf("unexpected persistence: %s", persisted)
+	}
+}
+
+func TestOpenMigratesLegacyClarificationTaskToUserGate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	data := `{"version":4,"sessions":{"one":{"global_facts":[],"projects":{"p":{"project_facts":[],"chats":{"c":{"id":"c","tasks":{"t":{"id":"t","title":"Рецепт","description":"Рецепт","stage":"clarify_input","current_step":"Уточнить входные данные","expected_action":"agent","status":"active"}}}}}}}}}`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Open(&scriptedProvider{}, path, func() (agent.DialogSnapshot, error) { return snapshot(), nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	chat, ok := s.GetChat("one", "p", "c")
+	if !ok || len(chat.Tasks) != 1 {
+		t.Fatalf("chat=%+v ok=%t", chat, ok)
+	}
+	task := chat.Tasks[0]
+	if task.CurrentStep != clarificationStep || task.ExpectedAction != clarificationExpectedAction {
+		t.Fatalf("legacy task did not migrate to clarification gate: %#v", task)
 	}
 }
 

@@ -1,4 +1,4 @@
-import type { APIError, AdminLogsResponse, Chat, ErrorCategory, LogEvent, Memory, ProfileList, Project, ProjectList } from "../model/types";
+import type { APIError, AdminLogsResponse, Chat, ErrorCategory, LogEvent, Memory, ProfileList, Project, ProjectList, TaskInputResult } from "../model/types";
 
 const genericError = "Не удалось получить ответ. Повторите отправку.";
 export class BaristaAPIError extends Error { constructor(readonly category: ErrorCategory, message = genericError) { super(message); } }
@@ -31,11 +31,15 @@ export const baristaClient = {
   selectChat: (projectID: string, chatID: string) => request<unknown>(`${chatPath(projectID, chatID)}/select`, { method: "POST" }),
   removeChat: (projectID: string, chatID: string) => request<unknown>(chatPath(projectID, chatID), { method: "DELETE" }),
   send: (projectID: string, chatID: string, clientMessageID: string, text: string) => request<Chat>(`${chatPath(projectID, chatID)}/messages`, json({ client_message_id: clientMessageID, text })),
+  taskInput: (projectID: string, chatID: string, text: string, candidateTaskID?: string) => request<TaskInputResult>(`${chatPath(projectID, chatID)}/tasks/input`, json({ text, ...(candidateTaskID ? { candidate_task_id: candidateTaskID } : {}) })),
+  pauseTask: (projectID: string, chatID: string, taskID: string) => request<TaskInputResult>(`${chatPath(projectID, chatID)}/tasks/${encodeURIComponent(taskID)}/pause`, json({})),
+  resumeTask: (projectID: string, chatID: string, taskID: string, text: string) => request<TaskInputResult>(`${chatPath(projectID, chatID)}/tasks/${encodeURIComponent(taskID)}/resume`, json({ text: text.trim() })),
   retry: (projectID: string, chatID: string, messageID: string) => request<Chat>(`${chatPath(projectID, chatID)}/messages/${encodeURIComponent(messageID)}/retry`, { method: "POST" }),
   memory: (projectID: string) => request<Memory>(`${projectPath(projectID)}/memory`),
   clearGlobalMemory: (projectID: string) => request<void>(`${projectPath(projectID)}/memory/global`, { method: "DELETE" }),
   clearProjectMemory: (projectID: string) => request<void>(`${projectPath(projectID)}/memory/project`, { method: "DELETE" }),
-  logs: (dialogID: string, action: "lookup" | "refresh" | "poll") => request<AdminLogsResponse>(`/api/admin/logs?dialog_id=${encodeURIComponent(dialogID)}&action=${action}`),
+  // dialog_id remains the compatibility wire parameter; callers deal in chat IDs.
+  logs: (chatID: string, action: "lookup" | "refresh" | "poll") => request<AdminLogsResponse>(`/api/admin/logs?dialog_id=${encodeURIComponent(chatID)}&action=${action}`),
   event: async (event: LogEvent, fields: { project_id?: string; chat_id?: string; message_id?: string; error_category?: ErrorCategory } = {}) => { try { await request<unknown>("/api/events", json({ event, ...fields })); } catch { /* Telemetry never blocks chat. */ } },
 };
 

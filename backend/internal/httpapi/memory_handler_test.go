@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -13,6 +16,7 @@ import (
 	"aichallenge/week_1/task_1/internal/agent"
 	"aichallenge/week_1/task_1/internal/llm"
 	"aichallenge/week_1/task_1/internal/memory"
+	"aichallenge/week_1/task_1/internal/observability"
 )
 
 type memoryProvider struct{ calls int }
@@ -47,7 +51,7 @@ func TestMemoryHandlerPersistsFailedUserAndRetries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := NewMemory(s)
+	h := NewMemory(s, observability.NewJournal(false, nil))
 	_, listing := callMemory(t, h, http.MethodPost, "/api/projects", `{}`)
 	pid := listing["selected_project_id"].(string)
 	_, chat := callMemory(t, h, http.MethodPost, "/api/projects/"+pid+"/chats", `{}`)
@@ -75,7 +79,7 @@ func TestMemoryHandlerFreshListOmitsEmptySelections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := NewMemory(s)
+	h := NewMemory(s, observability.NewJournal(false, nil))
 	status, result := callMemory(t, h, http.MethodGet, "/api/projects", "")
 	if status != http.StatusOK {
 		t.Fatalf("status=%d", status)
@@ -93,7 +97,7 @@ func TestMemoryHandlerRenamesProject(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := NewMemory(s)
+	h := NewMemory(s, observability.NewJournal(false, nil))
 	_, listing := callMemory(t, h, http.MethodPost, "/api/projects", `{}`)
 	pid := listing["selected_project_id"].(string)
 	status, project := callMemory(t, h, http.MethodPatch, "/api/projects/"+pid, `{"title":"  Эспрессо  "}`)
@@ -111,7 +115,7 @@ func TestProfileHandlerCRUDValidationAndIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := NewMemory(s)
+	h := NewMemory(s, observability.NewJournal(false, nil))
 	status, initial := callMemory(t, h, http.MethodGet, "/api/profiles", "")
 	if status != http.StatusOK || initial["active_profile_id"] != "barista" || len(initial["profiles"].([]any)) != 2 {
 		t.Fatalf("initial status=%d body=%v", status, initial)
@@ -151,5 +155,71 @@ func TestProfileHandlerCRUDValidationAndIsolation(t *testing.T) {
 	}
 	if len(other["profiles"].([]any)) != 2 || other["active_profile_id"] != "barista" {
 		t.Fatalf("other=%v", other)
+	}
+}
+
+func TestMemoryAdminFindsChatByIDWithoutSessionAndReturnsJournal(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"answer"}}]}`)
+	}))
+	defer upstream.Close()
+	snapshot := memorySnapshot()
+	snapshot.Chat.BaseURL = upstream.URL
+	snapshot.Text.BaseURL = upstream.URL
+	snapshot.Memory.Snapshot.BaseURL = upstream.URL
+	s, err := memory.New(agent.OpenAIProvider{}, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := observability.NewJournal(false, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	h := NewMemory(s, journal)
+	_, listing := callMemory(t, h, http.MethodPost, "/api/projects", `{}`)
+	pid := listing["selected_project_id"].(string)
+	_, chat := callMemory(t, h, http.MethodPost, "/api/projects/"+pid+"/chats", `{}`)
+	cid := chat["id"].(string)
+	status, _ := callMemory(t, h, http.MethodPost, "/api/projects/"+pid+"/chats/"+cid+"/messages", `{"client_message_id":"one","text":"beans"}`)
+	if status != http.StatusOK {
+		t.Fatalf("send status=%d", status)
+	}
+
+	lookup := httptest.NewRequest(http.MethodGet, "/api/admin/logs?dialog_id="+cid+"&action=lookup", nil)
+	lookupResponse := httptest.NewRecorder()
+	h.ServeHTTP(lookupResponse, lookup)
+	if lookupResponse.Code != http.StatusOK {
+		t.Fatalf("lookup status=%d body=%s", lookupResponse.Code, lookupResponse.Body.String())
+	}
+	var found struct {
+		Found bool                   `json:"found"`
+		Logs  []observability.Record `json:"logs"`
+	}
+	if err := json.Unmarshal(lookupResponse.Body.Bytes(), &found); err != nil {
+		t.Fatal(err)
+	}
+	if !found.Found || len(found.Logs) == 0 {
+		t.Fatalf("found=%v logs=%+v", found.Found, found.Logs)
+	}
+	callID := ""
+	for _, record := range found.Logs {
+		if record.Event == "llm_request" && record.CallID != "" {
+			callID = record.CallID
+			break
+		}
+	}
+	if callID == "" {
+		t.Fatalf("LLM trace with call_id was not recorded: %+v", found.Logs)
+	}
+
+	unknown := httptest.NewRequest(http.MethodGet, "/api/admin/logs?dialog_id=missing&action=lookup", nil)
+	unknownResponse := httptest.NewRecorder()
+	h.ServeHTTP(unknownResponse, unknown)
+	var missing struct {
+		Found bool `json:"found"`
+	}
+	if err := json.Unmarshal(unknownResponse.Body.Bytes(), &missing); err != nil {
+		t.Fatal(err)
+	}
+	if unknownResponse.Code != http.StatusOK || missing.Found {
+		t.Fatalf("unknown status=%d found=%v", unknownResponse.Code, missing.Found)
 	}
 }
