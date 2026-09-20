@@ -14,11 +14,20 @@ import (
 	"syscall"
 	"time"
 
+	"aichallenge/week_1/task_1/internal/adapters/configsnapshot"
+	"aichallenge/week_1/task_1/internal/adapters/extractjson"
+	"aichallenge/week_1/task_1/internal/adapters/openai"
+	"aichallenge/week_1/task_1/internal/adapters/statejson"
 	"aichallenge/week_1/task_1/internal/agent"
+	"aichallenge/week_1/task_1/internal/application/conversation"
+	"aichallenge/week_1/task_1/internal/application/state"
+	"aichallenge/week_1/task_1/internal/application/taskflow"
+	"aichallenge/week_1/task_1/internal/application/workspace"
 	"aichallenge/week_1/task_1/internal/config"
+	"aichallenge/week_1/task_1/internal/domain/model"
 	"aichallenge/week_1/task_1/internal/httpapi"
 	"aichallenge/week_1/task_1/internal/llm"
-	"aichallenge/week_1/task_1/internal/memory"
+	"aichallenge/week_1/task_1/internal/observability"
 )
 
 func main() {
@@ -41,14 +50,35 @@ func main() {
 		os.Exit(1)
 	}
 	logConfig(logger, requestID, "success", time.Since(started), "")
-	store, err := memory.Open(agent.OpenAIProvider{}, cfg.HistoryPath, httpapi.SnapshotLoader(cfg.LLMConfigPath))
+
+	snapshot, err := configsnapshot.Loader(cfg.LLMConfigPath)()
 	if err != nil {
-		logger.Error("barista.server", "source", "backend", "event", "server", "result", "failure", "correlation_id", requestID, "error_category", "storage")
+		logger.Error("barista.server", "error_category", "config", "correlation_id", requestID)
 		os.Exit(1)
 	}
-	defer store.Close()
-	server := &http.Server{Addr: cfg.Addr, Handler: httpapi.NewMemory(store)}
-	if err := serve(server, store.Close); err != nil {
+	client, err := openai.New(agent.OpenAIProvider{}, snapshot)
+	if err != nil {
+		logger.Error("barista.server", "error_category", "config", "correlation_id", requestID)
+		os.Exit(1)
+	}
+	disk, initial, err := statejson.Open(cfg.HistoryPath)
+	if err != nil {
+		logger.Error("barista.server", "error_category", "storage", "correlation_id", requestID)
+		os.Exit(1)
+	}
+	store := state.New(initial, disk)
+	id := func() string { return llm.RequestID(llm.WithRequestID(context.Background(), "")) }
+	settings := conversation.Settings{Prompt: snapshot.Chat.SystemPrompt, TitlePrompt: snapshot.Text.SystemPrompt, Window: snapshot.ContextWindowMessages}
+	titles := conversation.NewTitles(store, client, settings.TitlePrompt, time.Now)
+	extractor := extractjson.NewExtractor(client, snapshot.Memory.Snapshot.SystemPrompt)
+	workspaceService := workspace.New(store, store, id, time.Now)
+	conversationService := conversation.New(store, client, extractor, titles, settings, id, time.Now)
+	tasks := taskflow.New(store, client, extractor, extractjson.ProposalDecoder{}, model.TaskRouter{}, titles, settings, id, time.Now)
+	closeStore := func() { store.Close(); titles.Close() }
+	defer closeStore()
+	journal := observability.NewJournal(cfg.LogTextPayloads, logger)
+	server := &http.Server{Addr: cfg.Addr, Handler: httpapi.NewMemory(httpapi.UseCases{Projects: workspaceService, Chats: workspaceService, Profiles: workspaceService, Memory: workspaceService, Conversations: conversationService, Tasks: tasks, Health: store}, journal)}
+	if err := serve(server, closeStore); err != nil {
 		logger.Error("barista.server", "source", "backend", "event", "server", "result", "failure", "correlation_id", requestID, "error_category", "network")
 		os.Exit(1)
 	}

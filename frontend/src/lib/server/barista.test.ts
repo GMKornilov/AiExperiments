@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createDialog, createProfile, deleteProfile, getMemory, listDialogs, listProfiles, listProjects, renameProject, selectProfile, sendMessage } from "./barista";
+import { adminLogs, createDialog, createProfile, deleteProfile, getMemory, listDialogs, listProfiles, listProjects, pauseTask, renameProject, resumeTask, selectProfile, sendMessage, taskInput } from "./barista";
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
@@ -7,6 +7,14 @@ const dialog = { id: "d", title: "Новый диалог", title_status: "idle"
 const createRequest = (init: RequestInit = {}) => new Request("http://web/api/dialogs", { ...init, method: "POST", headers: { "content-type": "application/json", ...(init.headers ?? {}) }, body: JSON.stringify({ context_strategy: "summary" }) });
 
 describe("barista BFF", () => {
+  it("передаёт произвольные поля журнала Admin без BFF-валидации", async () => {
+    const logs = { found: true, log_text_payloads: false, logs: [{ timestamp: "2026-01-01T00:00:00Z", source: "backend", event: "llm_response", result: "success", correlation_id: "request-1", dialog_id: "chat-1", purpose: "future_backend_purpose", provider_trace: { model: "new-model", retry: 2 }, new_flag: true }] };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(logs)));
+    const result = await adminLogs(new Request("http://web/api/admin/logs?dialog_id=chat-1&action=lookup"));
+    expect(result.status).toBe(200);
+    expect(await result.json()).toEqual(logs);
+  });
+
   it("валидирует и проецирует профили без лишних полей", async () => {
     const profiles = { profiles: [
       { id: "barista", name: "Бариста", style: "Дружелюбно", constraints: "Без выдумок", additional_context: "Рецепты", built_in: true },
@@ -48,6 +56,72 @@ describe("barista BFF", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ global_facts: ["V60"], project_facts: ["Эфиопия"], status: "success" })));
     const memory = await getMemory(new Request("http://web/api/projects/p1/memory"), "p1");
     expect(await memory.json()).toEqual({ global_facts: ["V60"], project_facts: ["Эфиопия"], status: "success" });
+  });
+
+  it("принимает реальные состояния плана задачи и скрывает лишние поля кандидатов", async () => {
+    const task = { id: "t1", title: "Эспрессо", description: "Подобрать рецепт", stage: "execution", current_step: "Проверить помол", expected_action: "user", status: "active", plan: [{ id: "grinder", title: "Проверить помол", status: "current", stage: "execution" }], current_plan_item: "grinder", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:01:00Z" };
+    const saved = { id: "c1", project_id: "p1", title: "Чат", title_status: "success", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", messages: [], memory_status: "success", tasks: [task] };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ chat: saved, candidates: [{ ...task, private_note: "не выдавать" }] })); vi.stubGlobal("fetch", fetchMock);
+    const inputRequest = () => new Request("http://web/api/projects/p1/chats/c1/tasks/input", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "сделай крепче" }) });
+    const result = await taskInput(inputRequest(), "p1", "c1");
+    expect(result.status).toBe(502);
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ chat: saved, candidates: [{ id: task.id, title: task.title, description: task.description }] })));
+    const safe = await taskInput(inputRequest(), "p1", "c1");
+    expect(await safe.json()).toEqual({ chat: saved, candidates: [{ id: "t1", title: "Эспрессо", description: "Подобрать рецепт" }] });
+
+    const initialClarifyTask = {
+      id: "t2", title: "Подобрать рецепт", description: "Уточнить параметры для эспрессо",
+      stage: "clarify_input", current_step: "Уточнить цель задачи", expected_action: "agent",
+      status: "active", plan: [], created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:01:00Z",
+    };
+    const initialClarifyChat = { ...saved, tasks: [initialClarifyTask] };
+    // Actual backend shape: an absent candidate slice is serialized as null.
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ chat: initialClarifyChat, candidates: null })));
+    const noCandidates = await taskInput(inputRequest(), "p1", "c1");
+    expect(noCandidates.status).toBe(200);
+    expect(await noCandidates.json()).toEqual({ chat: initialClarifyChat });
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ chat: { ...saved, tasks: [{ ...task, current_plan_item: undefined }] } })));
+    expect((await taskInput(inputRequest(), "p1", "c1")).status).toBe(502);
+
+    const feedbackTask = {
+      ...task,
+      stage: "user_feedback",
+      current_step: "Учесть обратную связь пользователя",
+      expected_action: "agent",
+      plan: [
+        { id: "research", title: "Изучить исходные данные задачи", status: "completed", stage: "research_input_data" },
+        { id: "result", title: "Подготовить решение задачи", status: "completed", stage: "execution" },
+        { id: "feedback", title: "Учесть обратную связь пользователя", status: "current", stage: "execution" },
+      ],
+      current_plan_item: "feedback",
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ chat: { ...saved, tasks: [feedbackTask] } })));
+    const feedback = await taskInput(inputRequest(), "p1", "c1");
+    expect(feedback.status).toBe(200);
+    expect((await feedback.json()).chat.tasks[0].current_plan_item).toBe("feedback");
+
+    const awaitingFeedback = {
+      ...feedbackTask,
+      current_step: "Ожидать обратную связь пользователя",
+      expected_action: "user",
+      plan: feedbackTask.plan.map((item) => ({ ...item, status: "completed" })),
+      current_plan_item: undefined,
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ chat: { ...saved, tasks: [awaitingFeedback] } })));
+    expect((await taskInput(inputRequest(), "p1", "c1")).status).toBe(200);
+  });
+
+  it("требует непустой Resume input и передаёт pause/resume в изолированном сеансе", async () => {
+    const task = { id: "t1", title: "Эспрессо", description: "Подобрать рецепт", stage: "execution", current_step: "Проверить помол", expected_action: "user", status: "paused", plan: [{ id: "grinder", title: "Проверить помол", status: "current" }], current_plan_item: "grinder", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:01:00Z" };
+    const saved = { id: "c1", project_id: "p1", title: "Чат", title_status: "success", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", messages: [], memory_status: "success", tasks: [task] };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ chat: saved })); vi.stubGlobal("fetch", fetchMock);
+    const pause = await pauseTask(new Request("http://web/api/projects/p1/chats/c1/tasks/t1/pause", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }), "p1", "c1", "t1");
+    expect(pause.status).toBe(200);
+    const invalid = await resumeTask(new Request("http://web/api/projects/p1/chats/c1/tasks/t1/resume", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: " " }) }), "p1", "c1", "t1");
+    expect(invalid.status).toBe(400);
+    expect(fetchMock.mock.calls[0][1].body).toBe("{}");
   });
 
   it("принимает пустые selected IDs для нового browser-сеанса", async () => {

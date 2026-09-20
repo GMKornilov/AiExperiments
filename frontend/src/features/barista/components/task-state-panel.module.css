@@ -1,0 +1,26 @@
+.panel { min-width:0; margin:.5rem 0; border:1px solid var(--color-line); border-radius:14px; background:rgb(248 226 199 / 5%); }
+.panel h3 { margin:0; }
+.toggle { display:flex; width:100%; align-items:center; gap:.55rem; padding:.55rem .7rem; border:0; border-radius:inherit; color:var(--color-ink); background:transparent; font:600 .82rem/1.2 inherit; text-align:left; }
+.toggle:hover,.toggle:focus-visible { background:rgb(248 226 199 / 8%); }
+.toggle > :last-child { margin-left:auto; color:var(--color-muted); }
+.summary { color:var(--color-muted); font-weight:400; }
+.details { padding:0 .7rem .7rem; }
+.empty,.card > p,.candidates > p { color:var(--color-muted); font-size:.82rem; }
+.list,.candidates ul { display:grid; gap:.55rem; margin:.6rem 0 0; padding:0; list-style:none; }
+.card,.candidates { min-width:0; padding:.7rem; border:1px solid var(--color-line); border-radius:10px; }
+.heading { display:flex; min-width:0; align-items:start; gap:.5rem; justify-content:space-between; }
+.heading h3 { min-width:0; overflow-wrap:anywhere; font-size:.9rem; }
+.status { flex:none; border-radius:99px; padding:.18rem .42rem; font-size:.68rem; }
+.active { color:#35220a; background:#e8a65d; }.paused { color:#f8e2c7; background:#735633; }.done { color:#122617; background:#9fc49b; }
+.stage,.planEmpty > p,.feedbackHint,.doneHint { margin:.5rem 0 0; color:var(--color-muted); font-size:.78rem; }
+.planEmpty { margin:.65rem 0 0; padding:.5rem; border:1px dashed var(--color-line); border-radius:8px; }.planEmpty > p { margin-top:0; }
+.plan { display:grid; gap:.3rem; margin:.7rem 0 0; padding:0; list-style:none; }
+.planStep { position:relative; min-width:0; padding:.42rem .5rem .42rem .85rem; border-left:2px solid var(--color-line); color:var(--color-muted); }
+.planStep::before { position:absolute; top:.73rem; left:-.33rem; width:.48rem; height:.48rem; border:2px solid var(--color-line); border-radius:50%; background:var(--color-bg); content:""; }
+.planStep.completed { border-color:#9fc49b; }.planStep.completed::before { border-color:#9fc49b; background:#9fc49b; }
+.planStep.current { border-color:var(--color-accent); color:var(--color-ink); background:rgb(232 166 93 / 9%); }.planStep.current::before { border-color:var(--color-accent); background:var(--color-accent); }
+.planHeading { display:flex; align-items:baseline; justify-content:space-between; gap:.5rem; font-size:.8rem; font-weight:600; }.planState { flex:none; color:var(--color-muted); font-size:.68rem; font-weight:400; }.current .planState { color:var(--color-accent); font-weight:600; }.completed .planState { color:#9fc49b; }
+.stepDetails { display:grid; gap:.25rem; margin:.45rem 0 0; }.stepDetails div { display:grid; grid-template-columns:minmax(7rem,30%) minmax(0,1fr); gap:.45rem; }.stepDetails dt { color:var(--color-muted); font-size:.74rem; }.stepDetails dd { margin:0; overflow-wrap:anywhere; white-space:pre-wrap; font-size:.8rem; }
+.resumeHint { margin:.4rem 0 0; color:var(--color-muted); font-size:.74rem; }
+.card button,.candidates button { border:1px solid var(--color-line); border-radius:8px; padding:.45rem .65rem; color:var(--color-ink); background:transparent; }.candidates button { display:grid; width:100%; gap:.2rem; text-align:left; }.candidates button:hover,.candidates button:focus-visible { border-color:var(--color-accent); background:rgb(232 166 93 / 13%); }.candidates span { color:var(--color-muted); font-size:.78rem; overflow-wrap:anywhere; }
+@media (max-width:640px) { .stepDetails div { grid-template-columns:1fr; gap:.1rem; } }

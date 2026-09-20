@@ -1,5 +1,15 @@
 import { expect, test } from "@playwright/test";
 
+test("initial profile request uses the established project session", async ({ page }) => {
+  const profileRequest = page.waitForRequest(request => new URL(request.url()).pathname === "/api/profiles" && request.method() === "GET");
+  await page.goto("/");
+  const request = await profileRequest;
+  expect(await request.headerValue("cookie")).toMatch(/barista_session=[a-f0-9-]{36}/i);
+  await page.getByRole("button", { name: /новый проект/i }).first().click();
+  await page.getByRole("button", { name: "Создать чат" }).click();
+  await expect(page.getByLabel("Ваш вопрос")).toBeVisible();
+});
+
 async function newProjectWithChat(page) {
   await page.goto("/");
   await page.getByRole("button", { name: /новый проект/i }).first().click();
@@ -43,18 +53,19 @@ test("response waits for extractor; facts persist through refresh and layer clea
 });
 
 for (const trigger of ["memory-error", "memory-invalid"]) {
-  test(`extractor ${trigger} preserves pair and prior snapshots`, async ({ page }) => {
+  test(`task extractor ${trigger} rejects output and preserves prior snapshots`, async ({ page }) => {
     await newProjectWithChat(page);
     await sendAndWait(page, "У меня есть V60 и зёрна Эфиопия");
-    await sendAndWait(page, `${trigger} новая реплика`);
+    await page.getByLabel("Ваш вопрос").fill(`${trigger} новая реплика`);
+    await page.getByRole("button", { name: "Отправить" }).click();
+    await expect(page.getByRole("button", { name: "Повторить", exact: true })).toBeVisible();
+    await expect(page.getByText(`Ответ: ${trigger} новая реплика [e2e-fixture-model]`)).toHaveCount(0);
     const panel = await openMemory(page);
-    await expect(panel.getByText("Не удалось обновить память; ответ сохранён.")).toBeVisible();
     await expect(panel.getByText("Оборудование: V60")).toBeVisible();
     await expect(panel.getByText("Есть зёрна: Эфиопия")).toBeVisible();
     await page.reload();
-    await expect(page.getByText(`Ответ: ${trigger} новая реплика [e2e-fixture-model]`)).toBeVisible();
+    await expect(page.getByText(`Ответ: ${trigger} новая реплика [e2e-fixture-model]`)).toHaveCount(0);
     const refreshed = await openMemory(page);
-    await expect(refreshed.getByText("Не удалось обновить память; ответ сохранён.")).toBeVisible();
     await expect(refreshed.getByText("Оборудование: V60")).toBeVisible();
     await expect(refreshed.getByText("Есть зёрна: Эфиопия")).toBeVisible();
   });
@@ -116,4 +127,27 @@ test("title is refreshed in the background after the response", async ({ page })
   await newProjectWithChat(page);
   await sendAndWait(page, "title-slow назови этот чат");
   await expect(page.getByRole("heading", { name: "Название диалога" })).toBeVisible({ timeout: 12_000 });
+});
+
+test("copied chat ID opens admin journal; unknown and deleted chats are neutral", async ({ page }) => {
+  await newProjectWithChat(page);
+  await sendAndWait(page, "эспрессо admin smoke");
+  const copy = page.getByRole("button", { name: "Копировать ID чата" });
+  await copy.focus(); await page.keyboard.press("Enter");
+  const id = await page.evaluate(() => navigator.clipboard.readText());
+  expect(id).toMatch(/^[a-f0-9]+$/);
+  const projects = await (await page.request.get("/api/projects")).json();
+  expect(id).toBe(projects.selected_chat_id);
+  const pid = projects.selected_project_id;
+  await page.goto("/admin");
+  await page.getByLabel("ID чата", { exact: true }).fill(id);
+  await page.getByRole("button", { name: "Найти", exact: true }).click();
+  await expect(page.getByText("task_step", { exact: true }).first()).toBeVisible();
+  await page.getByLabel("ID чата", { exact: true }).fill("unknown-smoke-chat");
+  await page.getByRole("button", { name: "Найти", exact: true }).click();
+  await expect(page.getByText("Данные не найдены.", { exact: true })).toBeVisible();
+  expect((await page.request.delete(`/api/projects/${pid}/chats/${id}`)).status()).toBe(204);
+  await page.getByLabel("ID чата", { exact: true }).fill(id);
+  await page.getByRole("button", { name: "Найти", exact: true }).click();
+  await expect(page.getByText("Данные не найдены.", { exact: true })).toBeVisible();
 });

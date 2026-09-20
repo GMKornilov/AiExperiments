@@ -1,0 +1,20 @@
+services:
+  barista-api:
+    env_file: !override
+      - ${BARISTA_SMOKE_DIR}/smoke.env
+    volumes:
+      - ${BARISTA_SMOKE_DIR}/backend.yaml:/app/config.yaml:ro
+      - ${BARISTA_SMOKE_DIR}/llm.yaml:/app/llm.yaml:ro
+      - ${BARISTA_SMOKE_DIR}:/fixtures:ro
+    depends_on:
+      - fixture-provider
+  barista-web:
+    ports: !override
+      - "${BARISTA_SMOKE_PORT:-13030}:3000"
+  fixture-provider:
+    image: node:24-alpine
+    command: ["node", "/fixtures/provider.mjs"]
+    environment:
+      BARISTA_PROVIDER_HOST: 0.0.0.0
+    volumes:
+      - ${BARISTA_SMOKE_DIR}:/fixtures:ro

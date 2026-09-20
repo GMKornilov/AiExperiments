@@ -1,14 +1,15 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { CollapsibleMessage } from "./collapsible-message";
 import { ProfileManager } from "./profile-manager";
+import { TaskStatePanel } from "./task-state-panel";
 import { BaristaAPIError, baristaClient, userFacingError } from "../lib/chat-client";
-import type { BaristaMessage, Chat, Memory, ProfileList, Project, ProjectList } from "../model/types";
+import type { BaristaMessage, Chat, Memory, ProfileList, Project, ProjectList, Task, TaskCandidate } from "../model/types";
 import styles from "./barista-workspace.module.css";
 
 type Confirmation = { kind: "project"; project: Project } | { kind: "chat"; chat: Chat } | { kind: "memory"; layer: "global" | "project" };
-const newID = () => crypto.randomUUID();
+type TaskInputAttempt = { text: string; cancellationRequested: boolean; taskID?: string };
 const emptyMemory: Memory = { global_facts: [], project_facts: [], status: "idle" };
 const messageError = (message: BaristaMessage) => message.status === "error" ? userFacingError(new BaristaAPIError(message.error_category ?? "network")) : null;
 
@@ -26,10 +27,36 @@ export function BaristaWorkspace() {
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [renameTarget, setRenameTarget] = useState<Project | null>(null); const [renameTitle, setRenameTitle] = useState("");
   const [draft, setDraft] = useState(""); const [error, setError] = useState<string | null>(null);
+  const [taskCandidates, setTaskCandidates] = useState<TaskCandidate[]>([]);
+  const [candidateInput, setCandidateInput] = useState("");
+  const candidateInputID = useRef<string | undefined>(undefined);
+  const resumeOperationIDs = useRef(new Map<string, string>());
+  const [resumeRetry, setResumeRetry] = useState<Task | null>(null);
+  const [pausingTaskID, setPausingTaskID] = useState<string | null>(null);
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  const taskRevision = useRef(0);
+  const taskInputAttempts = useRef(new Map<string, TaskInputAttempt>());
+  const activeTaskInputAttemptID = useRef<string | null>(null);
 
   const selectedProject = useMemo(() => data.projects.find((project) => project.id === selectedProjectID) ?? null, [data, selectedProjectID]);
   const selectedChat = useMemo(() => selectedProject?.chats.find((chat) => chat.id === selectedChatID) ?? null, [selectedProject, selectedChatID]);
-  const replaceChat = (chat: Chat) => setData(current => ({ ...current, projects: current.projects.map(project => project.id === chat.project_id ? { ...project, chats: project.chats.map(old => old.id === chat.id ? chat : old), selected_chat_id: chat.id } : project) }));
+  const activeTask = useMemo(() => selectedChat?.tasks?.find(task => task.status === "active") ?? null, [selectedChat]);
+  const pausedTask = useMemo(() => selectedChat?.tasks?.find(task => task.status === "paused") ?? null, [selectedChat]);
+  const replaceChat = (chat: Chat, preservePendingTaskInputs = false) => setData(current => ({ ...current, projects: current.projects.map(project => project.id === chat.project_id ? { ...project, chats: project.chats.map(old => {
+    if (old.id !== chat.id || !preservePendingTaskInputs) return old.id === chat.id ? chat : old;
+    const pendingInputs = old.messages.filter(message => message.localOnly && taskInputAttempts.current.has(message.id) && !chat.messages.some(saved => saved.client_message_id === message.id));
+    return { ...chat, messages: [...chat.messages, ...pendingInputs] };
+  }), selected_chat_id: chat.id } : project) }));
+  const appendPendingTaskInput = (projectID: string, chatID: string, message: BaristaMessage) => setData(current => ({ ...current, projects: current.projects.map(project => project.id !== projectID ? project : { ...project, chats: project.chats.map(chat => chat.id !== chatID ? chat : { ...chat, messages: [...chat.messages, message] }) }) }));
+  const updateLocalTaskInput = (projectID: string, chatID: string, messageID: string, status: BaristaMessage["status"], errorCategory?: BaristaMessage["error_category"]) => setData(current => ({ ...current, projects: current.projects.map(project => project.id !== projectID ? project : { ...project, chats: project.chats.map(chat => chat.id !== chatID ? chat : { ...chat, messages: chat.messages.map(message => message.id !== messageID ? message : { ...message, status, error_category: errorCategory }) }) }) }));
+  const cancellationRequested = (messageID: string) => taskInputAttempts.current.get(messageID)?.cancellationRequested === true;
+  const clearCancelledTaskInputAttempts = () => {
+    for (const [messageID, attempt] of taskInputAttempts.current) {
+      if (!attempt.cancellationRequested) continue;
+      taskInputAttempts.current.delete(messageID);
+      if (activeTaskInputAttemptID.current === messageID) activeTaskInputAttemptID.current = null;
+    }
+  };
 
   async function load() {
     const next = await baristaClient.projects(); setData(next);
@@ -46,17 +73,32 @@ export function BaristaWorkspace() {
     catch (cause) { setProfilesError(userFacingError(cause)); }
     finally { setProfilesLoading(false); }
   }
-  useEffect(() => { void Promise.resolve().then(load).catch(cause => setError(userFacingError(cause))).finally(() => setReady(true)); void loadProfiles(); }, []);
+  useEffect(() => {
+    // Establish the HttpOnly session cookie before another first-load request
+    // can create a competing session and replace ownership in the browser.
+    void Promise.resolve().then(load).catch(cause => setError(userFacingError(cause))).then(loadProfiles).finally(() => setReady(true));
+  }, []);
   useEffect(() => {
     if (!selectedProjectID || !selectedChatID || selectedChat?.title_status !== "pending") return;
     let cancelled = false; let attempts = 0; let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
-      try { const fresh = await baristaClient.getChat(selectedProjectID, selectedChatID); if (cancelled) return; replaceChat(fresh); if (fresh.title_status === "pending" && ++attempts < 8) timer = setTimeout(() => { void poll(); }, Math.min(500 * (attempts + 1), 2_000)); }
+      try { const fresh = await baristaClient.getChat(selectedProjectID, selectedChatID); if (cancelled) return; replaceChat(fresh, true); if (fresh.title_status === "pending" && ++attempts < 8) timer = setTimeout(() => { void poll(); }, Math.min(500 * (attempts + 1), 2_000)); }
       catch { /* Title generation is optional. */ }
     };
     timer = setTimeout(() => { void poll(); }, 400);
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, [selectedProjectID, selectedChatID, selectedChat?.title_status]);
+
+  useEffect(() => {
+    if (!pending || !selectedProjectID || !selectedChatID) return;
+    let cancelled = false;
+    const timer = setInterval(() => {
+      void baristaClient.getChat(selectedProjectID, selectedChatID).then(chat => {
+        if (!cancelled) setData(current => ({ ...current, projects: current.projects.map(project => project.id !== chat.project_id ? project : { ...project, chats: project.chats.map(old => old.id !== chat.id ? old : { ...old, title: chat.title, title_status: chat.title_status, tasks: chat.memory_status === "updating" ? chat.tasks : old.tasks }) }) }));
+      }).catch(() => { /* The input request owns the error outcome. */ });
+    }, 300);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [pending, selectedProjectID, selectedChatID]);
 
   async function selectProject(project: Project) {
     if (pending) return; setSelectedProjectID(project.id); setSelectedChatID(project.selected_chat_id ?? project.chats[0]?.id ?? null); setSidebarOpen(false); setError(null);
@@ -92,23 +134,100 @@ export function BaristaWorkspace() {
   }
   async function submitMessage() {
     if (!selectedProject || !selectedChat || pending || !draft.trim()) return;
-    const text = draft.trim(); const clientID = newID(); const optimistic: BaristaMessage = { id: `local-${clientID}`, client_message_id: clientID, role: "user", text, status: "pending", created_at: new Date().toISOString(), localOnly: true };
-    setDraft(""); setPending(true); setError(null); replaceChat({ ...selectedChat, memory_status: "updating", messages: [...selectedChat.messages, optimistic] }); setMemory(current => ({ ...current, status: "updating", error_category: undefined }));
-    try { const chat = await baristaClient.send(selectedProject.id, selectedChat.id, clientID, text); replaceChat(chat); setMemory(await baristaClient.memory(selectedProject.id)); void baristaClient.event("message_sent", { project_id: selectedProject.id, chat_id: selectedChat.id, message_id: clientID }); }
+    const text = draft.trim();
+    const messageID = `local-task-input-${crypto.randomUUID()}`;
+    const pendingMessage: BaristaMessage = { id: messageID, client_message_id: messageID, role: "user", text, status: "pending", created_at: new Date().toISOString(), localOnly: true };
+    setDraft(""); setPending(true); setError(null); setTaskCandidates([]); setCandidateInput(text);
+    taskRevision.current += 1;
+    const revision = taskRevision.current;
+    candidateInputID.current = messageID;
+    taskInputAttempts.current.set(messageID, { text, cancellationRequested: false });
+    activeTaskInputAttemptID.current = messageID;
+    appendPendingTaskInput(selectedProject.id, selectedChat.id, pendingMessage);
+    try {
+      const result = await baristaClient.taskInput(selectedProject.id, selectedChat.id, text, undefined, messageID);
+      // Pause owns the task snapshot. A late response belongs to the cancelled run
+      // and must not replace that snapshot.
+      if (cancellationRequested(messageID) || revision !== taskRevision.current) return;
+      taskInputAttempts.current.delete(messageID);
+      if (activeTaskInputAttemptID.current === messageID) activeTaskInputAttemptID.current = null;
+      clearCancelledTaskInputAttempts(); replaceChat(result.chat); setTaskCandidates(result.candidates ?? []);
+      setMemory(await baristaClient.memory(selectedProject.id));
+    }
     catch (cause) {
+      // Cancelling an in-flight LLM request is an expected outcome, not a failed
+      // user message. Keep its optimistic bubble neutral until Resume takes over.
+      if (cancellationRequested(messageID) || revision !== taskRevision.current) return;
       const category = cause instanceof BaristaAPIError ? cause.category : "network";
-      // The backend may have persisted a failed user message with its canonical ID.
-      // Prefer that state, so a later retry always targets the server-side message.
-      try { replaceChat(await baristaClient.getChat(selectedProject.id, selectedChat.id)); }
-      catch { replaceChat({ ...selectedChat, memory_status: "error", memory_error_category: category, messages: [...selectedChat.messages, { ...optimistic, status: "error", error_category: category }] }); }
+      updateLocalTaskInput(selectedProject.id, selectedChat.id, messageID, "error", category);
+      if (activeTaskInputAttemptID.current === messageID) activeTaskInputAttemptID.current = null;
       try { setMemory(await baristaClient.memory(selectedProject.id)); }
       catch { setMemory(current => ({ ...current, status: "error", error_category: category })); }
-      setError(userFacingError(cause)); void baristaClient.event("message_failed", { project_id: selectedProject.id, chat_id: selectedChat.id, message_id: clientID, error_category: category });
+      setError(userFacingError(cause));
     }
+    finally {
+      if (cancellationRequested(messageID) || revision !== taskRevision.current) return;
+      setPending(false);
+    }
+  }
+  async function selectTaskCandidate(candidate: TaskCandidate) {
+    if (!selectedProject || !selectedChat || pending || !candidateInput) return;
+    setPending(true); setError(null);
+    try { const result = await baristaClient.taskInput(selectedProject.id, selectedChat.id, candidateInput, candidate.id, candidateInputID.current); replaceChat(result.chat); setTaskCandidates(result.candidates ?? []); setCandidateInput(""); setMemory(await baristaClient.memory(selectedProject.id)); }
+    catch (cause) { setError(userFacingError(cause)); }
+    finally { setPending(false); }
+  }
+  async function pauseTask(task: Task) {
+    if (!selectedProject || !selectedChat || pausingTaskID) return;
+    const attemptID = activeTaskInputAttemptID.current;
+    const attempt = attemptID ? taskInputAttempts.current.get(attemptID) : undefined;
+    // This must happen before the Pause request starts: its input request can
+    // reject while Pause is still waiting for the backend.
+    if (attempt && (!attempt.taskID || attempt.taskID === task.id)) attempt.cancellationRequested = true;
+    taskRevision.current += 1; setPausingTaskID(task.id); setError(null);
+    try {
+      const result = await baristaClient.pauseTask(selectedProject.id, selectedChat.id, task.id);
+      replaceChat(result.chat, true);
+      if (attemptID) setData(current => ({ ...current, projects: current.projects.map(project => ({ ...project, chats: project.chats.map(chat => ({ ...chat, messages: chat.messages.map(message => message.id === attemptID ? { ...message, paused: true } : message) })) })) }));
+      setTaskCandidates(result.candidates ?? []);
+      // The backend accepted cancellation, so the composer must leave its busy
+      // state immediately even while the aborted request is still unwinding.
+      setPending(false);
+    }
+    catch (cause) {
+      if (attemptID && taskInputAttempts.current.get(attemptID)?.cancellationRequested) {
+        taskInputAttempts.current.get(attemptID)!.cancellationRequested = false;
+        updateLocalTaskInput(selectedProject.id, selectedChat.id, attemptID, "error", cause instanceof BaristaAPIError ? cause.category : "network");
+      }
+      setPending(false); setError(userFacingError(cause));
+    }
+    finally { setPausingTaskID(null); }
+  }
+  async function resumeTask(task: Task) {
+    if (!selectedProject || !selectedChat || pending) return;
+    const clientID = resumeOperationIDs.current.get(task.id) ?? crypto.randomUUID();
+    resumeOperationIDs.current.set(task.id, clientID);
+    taskRevision.current += 1; setPending(true); setError(null); setResumeRetry(null);
+    try { const result = await baristaClient.resumeTask(selectedProject.id, selectedChat.id, task.id, "Продолжить сохранённый шаг.", clientID); resumeOperationIDs.current.delete(task.id); clearCancelledTaskInputAttempts(); replaceChat(result.chat); setTaskCandidates(result.candidates ?? []); setMemory(await baristaClient.memory(selectedProject.id)); }
+    catch (cause) { setResumeRetry(task); setError(userFacingError(cause)); }
     finally { setPending(false); }
   }
   async function retry(message: BaristaMessage) {
-    if (!selectedProject || !selectedChat || pending || message.localOnly) return;
+    if (!selectedProject || !selectedChat || pending) return;
+    const taskInput = taskInputAttempts.current.get(message.id);
+    if (taskInput) {
+      setPending(true); setError(null); updateLocalTaskInput(selectedProject.id, selectedChat.id, message.id, "pending");
+      try {
+        const result = await baristaClient.taskInput(selectedProject.id, selectedChat.id, taskInput.text, taskInput.taskID, message.id);
+        taskInputAttempts.current.delete(message.id); replaceChat(result.chat); setTaskCandidates(result.candidates ?? []); setCandidateInput(taskInput.text); setMemory(await baristaClient.memory(selectedProject.id));
+      }
+      catch (cause) {
+        updateLocalTaskInput(selectedProject.id, selectedChat.id, message.id, "error", cause instanceof BaristaAPIError ? cause.category : "network"); setError(userFacingError(cause));
+      }
+      finally { setPending(false); }
+      return;
+    }
+    if (message.localOnly) return;
     setPending(true); setError(null);
     try { const chat = await baristaClient.retry(selectedProject.id, selectedChat.id, message.id); replaceChat(chat); setMemory(await baristaClient.memory(selectedProject.id)); void baristaClient.event("message_retried", { project_id: selectedProject.id, chat_id: selectedChat.id, message_id: message.id }); }
     catch (cause) {
@@ -118,19 +237,30 @@ export function BaristaWorkspace() {
     } finally { setPending(false); }
   }
 
+  async function copyChatID() {
+    if (!selectedChat) return;
+    try {
+      await navigator.clipboard.writeText(selectedChat.id);
+      setCopyStatus("ID чата скопирован.");
+    } catch {
+      setCopyStatus("Не удалось скопировать ID чата.");
+    }
+  }
+
   const status = pending || memory.status === "updating" ? "Обновляем память…" : memory.status === "success" ? "Память обновлена" : memory.status === "error" ? "Не удалось обновить память; ответ сохранён." : "Память готова";
   return <div className={styles.shell}>
     <button className={styles.menuButton} type="button" aria-expanded={sidebarOpen} aria-controls="project-sidebar" onClick={() => setSidebarOpen(value => !value)}>Проекты</button>
     <aside id="project-sidebar" className={`${styles.sidebar} ${sidebarOpen ? styles.sidebarOpen : ""}`} aria-label="Проекты и чаты">
-      <button className={styles.profilesButton} type="button" onClick={() => setProfilesOpen(true)}>Профили</button>
+      <button className={styles.profilesButton} type="button" disabled={!ready} onClick={() => setProfilesOpen(true)}>Профили</button>
       <button className={styles.newDialog} type="button" disabled={pending || !ready} onClick={() => void createProject()}>+ Новый проект</button>
       <nav className={styles.projectList}>{data.projects.map(project => <section key={project.id} className={styles.projectRow}><div className={styles.dialogMainRow}><button className={project.id === selectedProjectID ? styles.selectedDialog : styles.dialogButton} type="button" onClick={() => void selectProject(project)}>{project.title || "Новый проект"}</button><button className={styles.renameButton} type="button" aria-label={`Переименовать проект ${project.title}`} onClick={() => { setRenameTarget(project); setRenameTitle(project.title); }}>✎</button><button className={styles.deleteButton} type="button" aria-label={`Удалить проект ${project.title}`} onClick={() => setConfirmation({ kind: "project", project })}>×</button></div>{project.id === selectedProjectID && <div className={styles.chatList}>{project.chats.map(chat => <div className={styles.dialogMainRow} key={chat.id}><button className={chat.id === selectedChatID ? styles.selectedDialog : styles.dialogButton} type="button" onClick={() => void selectChat(chat)}>{chat.title || "Новый чат"}</button><button className={styles.deleteButton} type="button" aria-label={`Удалить чат ${chat.title}`} onClick={() => setConfirmation({ kind: "chat", chat })}>×</button></div>)}<button className={styles.addChat} type="button" disabled={pending} onClick={() => void createChat()}>+ Новый чат</button></div>}</section>)}</nav>
     </aside>
-    <main className={styles.chat} aria-busy={!ready || pending}>{error && <p className={styles.error} role="alert">{error}</p>}<p className={styles.srOnly} role="status" aria-live="polite">{status}</p>
+    <main className={styles.chat} aria-busy={!ready || pending}>{error && <p className={styles.error} role="alert">{error}</p>}{resumeRetry && <button type="button" disabled={pending} onClick={() => void resumeTask(resumeRetry)}>Повторить продолжение</button>}<p className={styles.srOnly} role="status" aria-live="polite">{status}</p>
       {!ready ? <div className={styles.empty}>Загружаем проекты…</div> : !selectedProject ? <div className={styles.empty}><h2>Создайте проект</h2><p>В проекте можно вести несколько независимых чатов.</p><button type="button" disabled={pending} onClick={() => void createProject()}>Новый проект</button></div> : !selectedChat ? <div className={styles.empty}><h2>{selectedProject.title || "Новый проект"}</h2><p>В этом проекте пока нет чатов.</p><button type="button" disabled={pending} onClick={() => void createChat()}>Создать чат</button></div> : <><header className={styles.chatHeader}><div><h1>{selectedChat.title}</h1><p>{selectedProject.title}</p>{selectedChat.title_status === "pending" && <p className={styles.titlePending} role="status">Обновляем название…</p>}</div><button className={styles.memoryButton} type="button" aria-expanded={memoryOpen} onClick={() => setMemoryOpen(value => !value)}>Память</button></header>
       {memoryOpen && <aside className={styles.memoryPanel} aria-label="Память"><MemorySection title="Общая память" facts={memory.global_facts} onClear={() => setConfirmation({ kind: "memory", layer: "global" })} disabled={pending}/><MemorySection title="Память проекта" facts={memory.project_facts} onClear={() => setConfirmation({ kind: "memory", layer: "project" })} disabled={pending}/><p role="status">{status}</p></aside>}
-      <section className={styles.messages} aria-label="Переписка" aria-live="polite">{selectedChat.messages.length === 0 && <div className={styles.empty}><p>Спросите о зёрнах, помоле или рецепте.</p></div>}{selectedChat.messages.map(message => <article className={`${styles.bubble} ${message.role === "user" ? styles.userBubble : styles.assistantBubble}`} key={message.id}><div className={styles.messageActions}><span>{message.role === "user" ? "Вы" : "Бариста"}</span></div><CollapsibleMessage text={message.text}/>{message.status === "pending" && <p className={styles.status} role="status">Бариста готовит ответ и обновляет память…</p>}{message.status === "error" && <div className={styles.failed}><p>{messageError(message)}</p>{message.role === "user" && <button type="button" onClick={() => void retry(message)}>Повторить</button>}</div>}</article>)}</section>
-      <form className={styles.composer} onSubmit={(event: FormEvent) => { event.preventDefault(); void submitMessage(); }}><label htmlFor="barista-message">Ваш вопрос</label><textarea id="barista-message" value={draft} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.nativeEvent.isComposing || event.key !== "Enter" || event.shiftKey) return; event.preventDefault(); if (draft.trim() && !pending) void submitMessage(); }} disabled={pending} rows={3}/><div><span role="status">{status}</span><button type="submit" disabled={pending || !draft.trim()}>Отправить</button></div></form></>}
+      <TaskStatePanel tasks={selectedChat.tasks ?? []} candidates={taskCandidates} pending={pending} onCandidate={candidate => void selectTaskCandidate(candidate)} />
+      <section className={styles.messages} aria-label="Переписка" aria-live="polite">{selectedChat.messages.length === 0 && <div className={styles.empty}><p>Спросите о зёрнах, помоле или рецепте.</p></div>}{selectedChat.messages.map(message => <article className={`${styles.bubble} ${message.role === "user" ? styles.userBubble : styles.assistantBubble}`} key={message.id}><div className={styles.messageActions}><span>{message.role === "user" ? "Вы" : "Бариста"}</span></div><CollapsibleMessage text={message.text}/>{message.status === "pending" && <p className={styles.status} role="status">{message.paused ? "Задача на паузе" : "Бариста готовит ответ и обновляет память…"}</p>}{message.status === "error" && <div className={styles.failed}><p>{messageError(message)}</p>{message.role === "user" && <button type="button" onClick={() => void retry(message)}>Повторить</button>}</div>}</article>)}</section>
+      <form className={styles.composer} onSubmit={(event: FormEvent) => { event.preventDefault(); if (pending && activeTask) void pauseTask(activeTask); else if (!pending && pausedTask && !draft.trim()) void resumeTask(pausedTask); else void submitMessage(); }}><section className={styles.contextStatus} aria-label="Статус диалога"><div className={styles.threadID}><span>ID чата</span><code>ID: {selectedChat.id}</code><button type="button" aria-label="Копировать ID чата" onClick={() => void copyChatID()}>Копировать</button></div>{copyStatus && <p className={styles.copyStatus} role="status" aria-live="polite">{copyStatus}</p>}</section><label htmlFor="barista-message">Ваш вопрос</label><textarea id="barista-message" value={draft} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.nativeEvent.isComposing || event.key !== "Enter" || event.shiftKey) return; event.preventDefault(); if (draft.trim() && !pending) void submitMessage(); }} disabled={pending} rows={3}/><div><span role="status">{status}</span>{pending && activeTask ? <button className={styles.composerStop} type="submit" disabled={pausingTaskID === activeTask.id}>Остановить</button> : !pending && pausedTask && !draft.trim() ? <button type="submit">Продолжить</button> : <button type="submit" disabled={pending || !draft.trim()}>Отправить</button>}</div></form></>}
     </main>
     {confirmation && <div className={styles.dialogOverlay} role="presentation"><section className={styles.confirm} role="dialog" aria-modal="true" aria-labelledby="confirm-title"><h2 id="confirm-title">Подтвердите действие</h2><p>{confirmation.kind === "project" ? "Будут удалены проект, все его чаты и память проекта." : confirmation.kind === "chat" ? "Чат будет удалён. Память проекта останется." : `Будет очищена ${confirmation.layer === "global" ? "общая" : "память проекта"}.`}</p><div><button type="button" onClick={() => setConfirmation(null)}>Отмена</button><button className={styles.danger} type="button" onClick={() => void confirm()} disabled={pending}>{confirmation.kind === "memory" ? "Очистить" : "Удалить"}</button></div></section></div>}
     {renameTarget && <div className={styles.dialogOverlay} role="presentation"><form className={styles.confirm} role="dialog" aria-modal="true" aria-labelledby="rename-title" onSubmit={event => { event.preventDefault(); void renameProject(); }}><h2 id="rename-title">Переименовать проект</h2><label htmlFor="project-title">Название проекта</label><input id="project-title" maxLength={100} value={renameTitle} onChange={event => setRenameTitle(event.target.value)} autoFocus /><div><button type="button" onClick={() => setRenameTarget(null)}>Отмена</button><button type="submit" disabled={pending}>Сохранить</button></div></form></div>}

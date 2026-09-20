@@ -22,8 +22,8 @@ dummy credential. Set `BARISTA_E2E_URL` when using another frontend URL.
 npm run test:e2e
 ```
 
-По умолчанию Playwright запускает только `memory.spec.mjs`, соответствующий
-активному контракту проектов и трёх слоёв памяти. Остальные файлы в `e2e/`
+По умолчанию Playwright запускает `memory.spec.mjs`, `profiles.spec.mjs` и
+`tasks.spec.mjs` для активных контрактов. Остальные файлы в `e2e/`
 сохраняются как deprecated reference для будущего возврата к стратегиям,
 веткам и summary и не входят в текущую регрессию.
 
@@ -62,3 +62,29 @@ measurements. See [demo instructions](../../docs/token-usage-demo.md).
 Use an isolated `history_path` when restarting the backend for QA. When Next.js
 runs in Docker and the backend runs on the host, set `BARISTA_BACKEND_URL` to
 `http://host.docker.internal:18080` and bind the test backend to `0.0.0.0:18080`.
+
+## Полный smoke рефакторинга
+
+```sh
+./frontend/e2e/compose-smoke.sh
+```
+
+Скрипт использует актуальный корневой Compose с тестовым override, уникальное
+имя project, отдельный named volume, временные config/dotenv и provider в той
+же Docker-сети. Пользовательский stack не останавливается. Порт по умолчанию
+13030; можно задать `BARISTA_SMOKE_PORT`. Cleanup удаляет только тестовый
+project/volume. Артефакты сохраняются во временном каталоге.
+
+Active Playwright suite: memory, profiles, tasks. Composer работает через
+строгий task step; extractor failure в нём не сохраняет output. Совместимый
+обычный `/messages` с сохранением pair при memory failure отдельно проверяют
+Go contract suite и `compose-state.mjs`. Smoke также пересоздаёт контейнер,
+проверяет snapshot/cookie/idempotency и восстанавливает task после SIGKILL
+процесса с durable in-flight marker. Отдельно проверяются cookie первого
+profile request, повтор последнего Resume после `done`, отсутствие raw payloads
+в runtime logs и credentials в state/image environment. Ожидаемый snapshot
+снимается после всех изменений, непосредственно перед recreation.
+
+Tasks suite также проверяет автономную последовательность research → execution
+→ user feedback без ввода «дальше» и паузу во втором task-вызове цепочки:
+неподтверждённые промежуточные outputs отбрасываются, Resume повторяет цепочку.

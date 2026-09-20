@@ -69,6 +69,31 @@ BARISTA_ENV_FILE=deploy/production.env docker compose up --build -d
 категорией. Если основной LLM вызов завершился ошибкой, user-реплика сохраняется
 как error и может быть повторена вручную без дублирования пары.
 
+Task flow выполняется отдельно от обычной беседы. Один LLM-вызов предлагает
+ровно один task step. Если `expected_action` начинается с `agent:`, backend
+автоматически передаёт новый task snapshot и предыдущие outputs следующему
+вызову. Цепочка останавливается на `user:`, `done`, ошибке либо после восьмого
+вызова. Затем один memory extractor обрабатывает совокупный результат, а output,
+memory и конечный proposal/plan принимаются одним commit. При любой ошибке
+остаётся последний подтверждённый шаг. `client_message_id`
+у task input и Resume опционален для старых клиентов и обязателен для
+идемпотентного повтора новым клиентом. Автоматических retries нет.
+
+Title запускается независимо после durable claim первого ввода. При restart
+незавершённый title получает fallback, а незавершённый task — paused.
+
+## Архитектура
+
+- `domain/model`: сущности и инварианты без I/O;
+- `application/workspace`, `conversation`, `taskflow`: отдельные use cases;
+- `application/state`: single-process copy-on-write commit и владение отменой;
+- `adapters/statejson`, `openai`, `extractjson`, `configsnapshot`: границы I/O;
+- `httpapi`: transport DTO, endpoint interfaces и безопасные errors;
+- `cmd/api-server`: композиция и lifecycle.
+
+[Инвентарь legacy](../docs/backend-refactoring-inventory.md) отделяет сохранённые
+исторические тесты от активного контура.
+
 ## HTTP API
 
 Активный API начинается с `/api/projects`: проекты содержат `/chats`, а память
@@ -77,9 +102,12 @@ reading requests требуют `X-Session-ID`. Выбор проекта или
 удаление подтверждаются UI; backend возвращает только состояние владельца
 сессии и безопасные error categories.
 
-`history_path` — единый JSON state-файл версии 3. При переходе со старого
-формата legacy-чаты не мигрируются: старая история и связанная папка удаляются,
-новая модель начинает с пустого состояния. Файл не содержит credentials.
+`history_path` — единый JSON state-файл: актуальные v3/v4/v5 читаются,
+v3 нормализуется в v4, v5 сохраняет версию. Неизвестные поля/version и
+повреждённые данные блокируют запуск без перезаписи файла. Любая нормализация
+сначала сохраняет точную копию исходного JSON. Только распознанные historical
+v1/v2 сбрасываются после backup JSON и переименования legacy-каталога в backup.
+Credentials не входят в новое persisted state.
 
 Логи операций и LLM-циклов содержат correlation ID, IDs проекта/чата, результат,
 категорию и длительность; raw сообщения, facts и секреты не логируются.
@@ -89,6 +117,8 @@ reading requests требуют `X-Session-ID`. Выбор проекта или
 ```sh
 GOCACHE=$PWD/.gocache go test -race ./...
 GOCACHE=$PWD/.gocache go vet ./...
+# Из корня репозитория: isolated Docker + browser/restart smoke
+./frontend/e2e/compose-smoke.sh
 ```
 
 Актуальные требования: [агент](../.specs/barista-agent/SPEC.md) и

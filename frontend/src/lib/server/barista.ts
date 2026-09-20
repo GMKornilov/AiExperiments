@@ -3,6 +3,8 @@ import "server-only";
 const maxBodyBytes = 32 * 1024 * 1024;
 // One summary followed by one chat completion (default 30s each).
 const timeoutMilliseconds = 65_000;
+// Up to eight sequential task completions plus one memory extraction.
+const taskTimeoutMilliseconds = 300_000;
 const bodyTimeoutMilliseconds = 10_000;
 const sessionCookie = "barista_session";
 const errorCategories = new Set(["config", "validation", "network", "timeout", "provider", "invalid_response", "not_found", "busy", "cancelled", "storage", "context_limit", "memory"]);
@@ -191,6 +193,8 @@ function projectSuccess(method: string, path: string, value: unknown): unknown |
   if (path === "/api/projects" && method === "POST") return projectProjectList(value) ?? projectProject(value);
   if (path.startsWith("/api/projects/")) {
     if (path.endsWith("/memory")) return projectMemory(value);
+    if (/\/chats\/[^/]+\/tasks\/input$/.test(path) && method === "POST") return projectTaskInput(value);
+    if (/\/chats\/[^/]+\/tasks\/[^/]+\/(pause|resume)$/.test(path) && method === "POST") return projectTaskInput(value);
     if (path.includes("/chats/")) return projectChat(value);
     if (path.endsWith("/chats")) return projectChat(value);
     return projectProject(value);
@@ -204,7 +208,9 @@ function projectSuccess(method: string, path: string, value: unknown): unknown |
     return dialogs.every(Boolean) ? { dialogs, selected_dialog_id: item.selected_dialog_id } : null;
   }
   if (path === "/api/dialogs" || path.startsWith("/api/dialogs/")) return projectDialog(value);
-  if (path.startsWith("/api/admin/logs")) return projectLogs(value);
+  // Admin is a diagnostics view. Its backend payload is intentionally opaque to
+  // the BFF so newly added journal fields never make an existing chat invisible.
+  if (path.startsWith("/api/admin/logs")) return value;
   return value;
 }
 
@@ -234,11 +240,65 @@ function projectMemory(value: unknown): JSONRecord | null {
   return item;
 }
 
+function projectTaskPlanItem(value: unknown): JSONRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as JSONRecord;
+  if (!only(item, ["id", "title", "status", "stage"]) || !string(item.id) || !string(item.title) || !["pending", "current", "completed"].includes(item.status as string)) return null;
+  if (item.stage !== undefined && !["clarify_input", "research_input_data", "execution", "user_feedback"].includes(item.stage as string)) return null;
+  return item;
+}
+
+function projectTask(value: unknown): JSONRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const task = value as JSONRecord;
+  if (!only(task, ["id", "title", "description", "stage", "current_step", "expected_action", "status", "plan", "current_plan_item", "created_at", "updated_at"]) || !string(task.id) || !string(task.title) || !string(task.description) || !["clarify_input", "research_input_data", "execution", "user_feedback"].includes(task.stage as string) || !string(task.current_step) || typeof task.expected_action !== "string" || !["active", "paused", "done"].includes(task.status as string) || !Array.isArray(task.plan) || typeof task.created_at !== "string" || typeof task.updated_at !== "string") return null;
+  const plan = task.plan.map(projectTaskPlanItem);
+  if (!plan.every((item): item is JSONRecord => item !== null) || new Set(plan.map(item => item.id)).size !== plan.length) return null;
+  if (task.current_plan_item !== undefined && !string(task.current_plan_item)) return null;
+  const current = plan.filter(item => item.status === "current");
+  if (plan.length === 0) return task.stage === "clarify_input" && task.current_plan_item === undefined ? task : null;
+  if (task.status === "done") return current.length === 0 && task.current_plan_item === undefined && plan.every(item => item.status === "completed") ? task : null;
+  // user_feedback can either wait for the user after the confirmed plan, or
+  // execute a newly created feedback-revision item before asking again.
+  if (task.stage === "user_feedback") {
+    if (current.length === 0) return task.current_plan_item === undefined && plan.every(item => item.status === "completed") ? task : null;
+    return current.length === 1 && task.current_plan_item === current[0].id ? task : null;
+  }
+  if (task.stage === "clarify_input" || current.length !== 1 || task.current_plan_item !== current[0].id) return null;
+  return task;
+}
+
+function projectTaskCandidate(value: unknown): JSONRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as JSONRecord;
+  if (!only(candidate, ["id", "title", "description"])) {
+    const task = projectTask(value);
+    return task ? { id: task.id, title: task.title, description: task.description } : null;
+  }
+  if (!string(candidate.id) || !string(candidate.title) || !string(candidate.description)) return null;
+  return candidate;
+}
+
+function projectTaskInput(value: unknown): JSONRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as JSONRecord;
+  const chat = projectChat(item.chat);
+  if (!only(item, ["chat", "candidates"]) || !chat) return null;
+  // Go serializes an absent optional slice as null. It is equivalent to an
+  // omitted candidates field; all other invalid shapes remain rejected.
+  if (item.candidates === undefined || item.candidates === null) return { chat };
+  if (!Array.isArray(item.candidates)) return null;
+  const candidates = item.candidates.map(projectTaskCandidate);
+  if (!candidates.every((candidate): candidate is JSONRecord => candidate !== null)) return null;
+  return { chat, candidates };
+}
+
 function projectChat(value: unknown): JSONRecord | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const item = value as JSONRecord;
-  if (!only(item, ["id", "project_id", "title", "title_status", "created_at", "updated_at", "messages", "memory_status", "memory_error_category"]) || !string(item.id) || !string(item.project_id) || typeof item.title !== "string" || !["idle", "pending", "success", "fallback"].includes(item.title_status as string) || typeof item.created_at !== "string" || typeof item.updated_at !== "string" || !Array.isArray(item.messages) || !["idle", "updating", "success", "error"].includes(item.memory_status as string)) return null;
+  if (!only(item, ["id", "project_id", "title", "title_status", "created_at", "updated_at", "messages", "memory_status", "memory_error_category", "tasks"]) || !string(item.id) || !string(item.project_id) || typeof item.title !== "string" || !["idle", "pending", "success", "fallback"].includes(item.title_status as string) || typeof item.created_at !== "string" || typeof item.updated_at !== "string" || !Array.isArray(item.messages) || !["idle", "updating", "success", "error"].includes(item.memory_status as string)) return null;
   if (item.memory_error_category !== undefined && !errorCategories.has(item.memory_error_category as string)) return null;
+  if (item.tasks !== undefined && (!Array.isArray(item.tasks) || !item.tasks.every(projectTask))) return null;
   const messages = item.messages.map(projectMessage);
   return messages.every(Boolean) ? { ...item, messages } : null;
 }
@@ -263,30 +323,14 @@ function projectProjectList(value: unknown): JSONRecord | null {
   return projects.every(Boolean) ? { ...item, projects } : null;
 }
 
-function projectLogs(value: unknown): JSONRecord | null {
-  if (!value || typeof value !== "object") return null;
-  const item = value as JSONRecord;
-  if (!only(item, ["found", "log_text_payloads", "logs"]) || typeof item.found !== "boolean" || typeof item.log_text_payloads !== "boolean" || !Array.isArray(item.logs)) return null;
-  const logs: JSONRecord[] = [];
-  for (const value of item.logs) {
-    if (!value || typeof value !== "object") return null;
-    const log = value as JSONRecord;
-    if (!only(log, ["timestamp", "source", "event", "result", "correlation_id", "dialog_id", "message_id", "branch_id", "duration_ms", "error_category", "text", "attempt_id", "usage", "call_id", "purpose", "payload", "http_status", "truncated"]) || typeof log.timestamp !== "string" || (log.source !== "frontend" && log.source !== "backend") || !string(log.event) || !string(log.result) || !string(log.correlation_id) || (log.dialog_id !== undefined && !string(log.dialog_id)) || (log.message_id !== undefined && !string(log.message_id)) || (log.branch_id !== undefined && !string(log.branch_id)) || (log.duration_ms !== undefined && (typeof log.duration_ms !== "number" || !Number.isFinite(log.duration_ms))) || (log.error_category !== undefined && !errorCategories.has(log.error_category as string) && log.error_category !== "cancelled") || (log.text !== undefined && typeof log.text !== "string")) return null;
-    if ((log.attempt_id !== undefined && !string(log.attempt_id)) || (log.usage !== undefined && !projectUsage(log.usage))) return null;
-    if ((log.call_id !== undefined && !string(log.call_id)) || (log.purpose !== undefined && !["chat", "title", "summary", "facts"].includes(log.purpose as string)) || (log.payload !== undefined && typeof log.payload !== "string") || (log.http_status !== undefined && (!tokenCount(log.http_status) || log.http_status > 599)) || (log.truncated !== undefined && typeof log.truncated !== "boolean")) return null;
-    logs.push(log);
-  }
-  return { found: item.found, log_text_payloads: item.log_text_payloads, logs };
-}
-
-async function forward(request: Request, method: string, path: string, body?: JSONRecord): Promise<Response> {
+async function forward(request: Request, method: string, path: string, body?: JSONRecord, timeout = timeoutMilliseconds): Promise<Response> {
   const requestID = crypto.randomUUID();
   const browser = session(request);
   const started = Date.now();
   const observe = path !== "/api/events" && !path.includes("action=poll");
   const dialogID = path.match(/^\/api\/dialogs\/([^/]+)/)?.[1];
   try {
-    const upstream = await fetch(backendURL(path), { method, cache: "no-store", headers: { "X-Session-ID": browser.id, "X-Request-ID": requestID, ...(body ? { "Content-Type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(timeoutMilliseconds) });
+    const upstream = await fetch(backendURL(path), { method, cache: "no-store", headers: { "X-Session-ID": browser.id, "X-Request-ID": requestID, ...(body ? { "Content-Type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(timeout) });
     if (upstream.status === 204) { if (observe) record(browser, requestID, "bff_request_completed", Date.now() - started, undefined, dialogID); return empty(204, requestID, browser.setCookie); }
     const raw: unknown = await upstream.json().catch(() => null);
     if (!upstream.ok) {
@@ -334,10 +378,11 @@ export async function postEvent(request: Request): Promise<Response> {
 export async function adminLogs(request: Request): Promise<Response> {
   const requestID = crypto.randomUUID();
   const url = new URL(request.url);
-  const id = url.searchParams.get("dialog_id");
+  // dialog_id is retained only for compatibility with the existing Admin route.
+  const chatID = url.searchParams.get("dialog_id");
   const action = url.searchParams.get("action");
-  if (!id || !["lookup", "refresh", "poll"].includes(action ?? "")) return validationFailure(request, requestID);
-  return forward(request, "GET", `/api/admin/logs?dialog_id=${encodeURIComponent(id)}&action=${action}`);
+  if (!chatID || !["lookup", "refresh", "poll"].includes(action ?? "")) return validationFailure(request, requestID);
+  return forward(request, "GET", `/api/admin/logs?dialog_id=${encodeURIComponent(chatID)}&action=${action}`);
 }
 
 export async function setStrategy(request: Request, id: string): Promise<Response> {
@@ -403,5 +448,20 @@ export async function sendProjectMessage(request: Request, projectID: string, ch
   return forward(request, "POST", `/api/projects/${encodeURIComponent(projectID)}/chats/${encodeURIComponent(chatID)}/messages`, { client_message_id: body.client_message_id as string, text: body.text as string });
 }
 export async function retryProjectMessage(request: Request, projectID: string, chatID: string, messageID: string): Promise<Response> { return forward(request, "POST", `/api/projects/${encodeURIComponent(projectID)}/chats/${encodeURIComponent(chatID)}/messages/${encodeURIComponent(messageID)}/retry`); }
+export async function taskInput(request: Request, projectID: string, chatID: string): Promise<Response> {
+  const requestID = crypto.randomUUID(); const body = await readJSON(request);
+  if (!body || !only(body, ["text", "candidate_task_id", "client_message_id"]) || !text(body.text) || (body.candidate_task_id !== undefined && !string(body.candidate_task_id)) || (body.client_message_id !== undefined && !string(body.client_message_id))) return validationFailure(request, requestID, chatID);
+  return forward(request, "POST", `/api/projects/${encodeURIComponent(projectID)}/chats/${encodeURIComponent(chatID)}/tasks/input`, body, taskTimeoutMilliseconds);
+}
+export async function pauseTask(request: Request, projectID: string, chatID: string, taskID: string): Promise<Response> {
+  const body = await readJSON(request);
+  if (!body || !only(body, [])) return validationFailure(request, crypto.randomUUID(), chatID);
+  return forward(request, "POST", `/api/projects/${encodeURIComponent(projectID)}/chats/${encodeURIComponent(chatID)}/tasks/${encodeURIComponent(taskID)}/pause`, {});
+}
+export async function resumeTask(request: Request, projectID: string, chatID: string, taskID: string): Promise<Response> {
+  const body = await readJSON(request);
+  if (!body || !only(body, ["text", "client_message_id"]) || !text(body.text) || (body.client_message_id !== undefined && !string(body.client_message_id))) return validationFailure(request, crypto.randomUUID(), chatID);
+  return forward(request, "POST", `/api/projects/${encodeURIComponent(projectID)}/chats/${encodeURIComponent(chatID)}/tasks/${encodeURIComponent(taskID)}/resume`, body, taskTimeoutMilliseconds);
+}
 export async function getMemory(request: Request, projectID: string): Promise<Response> { return forward(request, "GET", `/api/projects/${encodeURIComponent(projectID)}/memory`); }
 export async function clearMemory(request: Request, projectID: string, layer: "global" | "project"): Promise<Response> { return forward(request, "DELETE", `/api/projects/${encodeURIComponent(projectID)}/memory/${layer}`); }
