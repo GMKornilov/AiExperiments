@@ -108,6 +108,10 @@ describe("BaristaWorkspace", () => {
     expect(screen.getAllByText("Что приготовить?")).toHaveLength(1);
     fireEvent.click(retryButton);
     await waitFor(() => expect(calls).toBe(2));
+    const inputs = fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/tasks/input"));
+    const firstID = JSON.parse(inputs[0][1].body).client_message_id;
+    expect(firstID).toBeTruthy();
+    expect(JSON.parse(inputs[1][1].body).client_message_id).toBe(firstID);
     expect(screen.getAllByText("Что приготовить?")).toHaveLength(1);
   });
 
@@ -125,6 +129,10 @@ describe("BaristaWorkspace", () => {
     expect(await screen.findByRole("button", { name: /Рецепт эспрессо/ })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: /Рецепт эспрессо/ }));
     await waitFor(() => expect(calls).toBe(2));
+    const inputs = fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/tasks/input"));
+    const firstID = JSON.parse(inputs[0][1].body).client_message_id;
+    expect(firstID).toBeTruthy();
+    expect(JSON.parse(inputs[1][1].body).client_message_id).toBe(firstID);
     const taskCalls = fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/tasks/input"));
     expect(JSON.parse(taskCalls[1][1].body).candidate_task_id).toBe("t1");
   });
@@ -191,7 +199,7 @@ describe("BaristaWorkspace", () => {
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
     expect(screen.queryByRole("button", { name: "Повторить" })).not.toBeInTheDocument();
     expect(screen.getByText("Сделай крепче")).toBeVisible();
-    expect(screen.getByText("Бариста готовит ответ и обновляет память…")).toBeVisible();
+    expect(screen.getByText("Задача на паузе")).toBeVisible();
     expect(await screen.findByRole("button", { name: "Продолжить" })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Продолжить" }));
     await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/resume"))).toBe(true));

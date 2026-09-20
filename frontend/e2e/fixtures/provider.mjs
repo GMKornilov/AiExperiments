@@ -59,10 +59,13 @@ createServer(async (request, response) => {
     return;
   }
   const titleRequest = body.model === "e2e-title-model";
+  const taskStateRaw = body.messages.find(message => message.role === "system")?.content.split("TASK_STATE: ")[1];
+  const taskState = taskStateRaw ? JSON.parse(taskStateRaw) : null;
   const key = `${body.model}:${text}`;
   const count = (seen.get(key) ?? 0) + 1;
   seen.set(key, count);
   if ((titleRequest && text.includes("title-slow")) || (!titleRequest && text.startsWith("slow"))) await new Promise((resolve) => setTimeout(resolve, titleRequest ? 4000 : 8000));
+  if (!titleRequest && text.includes("auto-slow") && taskState?.prior_outputs?.length === 1) await new Promise((resolve) => setTimeout(resolve, 8000));
   if (!titleRequest && text.startsWith("fail") && count === 1) { response.writeHead(503).end("fixture provider failure"); return; }
   const step = body.messages.filter((message) => message.role === "user").length;
   if (!titleRequest && (text.startsWith("tokens-overflow") || (text.startsWith("tokens-growth") && step > 8))) {
@@ -81,7 +84,39 @@ createServer(async (request, response) => {
     response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ choices: [], usage }));
     return;
   }
-  const answer = titleRequest ? "Название диалога" : `Ответ: ${text} [${body.model}]`;
+  let answer = titleRequest ? "Название диалога" : `Ответ: ${text} [${body.model}]`;
+  if (!titleRequest && taskState && text.includes("resume-invalid") && count === 3) {
+    answer = "{}";
+  } else if (!titleRequest && taskState) {
+    const task = taskState;
+    let stage = task.stage;
+    let plan = task.plan;
+    let current = task.current_plan_item;
+    let status = "active";
+    let confirmed = false;
+    let positive = false;
+    if (task.first) {
+      stage = "clarify_input"; plan = []; current = "";
+    } else if (stage === "clarify_input" && /подтверждаю|кофемолка|^да$|Niche/i.test(text)) {
+      stage = "research_input_data"; confirmed = true;
+      plan = [{ id: "grinder", title: "Узнать информацию о кофемолке", status: "current" }, { id: "recipe", title: "Подобрать стартовый рецепт", status: "pending" }]; current = "grinder";
+    } else if (stage === "research_input_data" && (!text.includes("same-stage") || task.prior_outputs.length >= 2)) {
+      if (text.includes("auto-slow") && task.prior_outputs.length >= 1) {
+        stage = "user_feedback"; plan = plan.map(item => ({ ...item, status: "completed" })); current = "";
+      } else {
+        stage = "execution"; plan = plan.map(item => ({ ...item, status: item.id === "recipe" ? "current" : "completed" })); current = "recipe";
+      }
+    } else if (stage === "execution") {
+      stage = "user_feedback"; plan = plan.map(item => ({ ...item, status: "completed" })); current = "";
+    } else if (stage === "user_feedback") {
+      positive = /^(да|спасибо|подходит|готово)$/i.test(text);
+      if (positive) status = "done";
+      else { stage = "execution"; current = `revision-${step}`; plan = [...plan, { id: current, title: "Скорректировать рецепт по отзыву", status: "current" }]; }
+    }
+    const clarify = stage === "clarify_input";
+    const expected = status === "done" ? "none" : clarify ? "user: Укажите модель кофемолки или подтвердите цель" : stage === "user_feedback" ? "user: Оцените рецепт" : "agent: Выполнить сохранённый шаг";
+    answer = JSON.stringify({ output: answer, understanding: "Подобрать эспрессо", questions: clarify ? ["Какая кофемолка?"] : [], stage, current_step: clarify ? "Подтвердить цель и модель кофемолки" : task.current_step || "Проверить параметры рецепта", expected_action: expected, status, plan, current_plan_item: current, goal_confirmed: confirmed, positive_feedback: positive });
+  }
   response.writeHead(200, { "Content-Type": "application/json" });
   response.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: answer } }], usage }));
-}).listen(port, "127.0.0.1", () => console.log(`fixture provider on ${port}`));
+}).listen(port, process.env.BARISTA_PROVIDER_HOST ?? "127.0.0.1", () => console.log(`fixture provider on ${port}`));

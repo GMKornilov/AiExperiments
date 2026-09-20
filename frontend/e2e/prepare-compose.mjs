@@ -1,0 +1,12 @@
+import { cp, readFile, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+const target = process.argv[2];
+if (!target) throw new Error("Fixture directory is required");
+const source = fileURLToPath(new URL("./fixtures/", import.meta.url));
+await cp(source, target, { recursive: true });
+let llm = await readFile(path.join(source, "llm.yaml"), "utf8");
+llm = llm.replaceAll("http://127.0.0.1:18081", "http://fixture-provider:18081").replaceAll('"e2e-dummy-credential"', '"${SECURE_API_KEY}"').replace(/system_prompt_path: "([^"/]+)"/g, 'system_prompt_path: "/fixtures/$1"');
+await writeFile(path.join(target, "llm.yaml"), llm);
+await writeFile(path.join(target, "backend.yaml"), 'addr: ":8080"\nllm_config_path: "/app/llm.yaml"\nhistory_path: "/app/data/state.json"\nlog_text_payloads: false\n');
+await writeFile(path.join(target, "smoke.env"), "SECURE_API_KEY=e2e-dummy-credential\nBARISTA_SMOKE_SENTINEL=fixture-only\n");

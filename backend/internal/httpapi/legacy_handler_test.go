@@ -1,3 +1,4 @@
+// Historical dialog handler: compiled only for retained legacy contract tests.
 // Package httpapi exposes the barista browser contract.
 package httpapi
 
@@ -5,19 +6,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	"aichallenge/week_1/task_1/internal/adapters/configsnapshot"
 	"aichallenge/week_1/task_1/internal/agent"
-	"aichallenge/week_1/task_1/internal/config"
 	"aichallenge/week_1/task_1/internal/llm"
 	"aichallenge/week_1/task_1/internal/observability"
 	"aichallenge/week_1/task_1/internal/session"
 )
-
-const maxBody = 32 << 20
 
 type Store interface {
 	Create(string, agent.DialogSnapshot) (session.Dialog, error)
@@ -90,24 +88,9 @@ func New(store Store, loadSnapshot func() (agent.DialogSnapshot, error), journal
 	return h
 }
 
+// SnapshotLoader is a compatibility wrapper for legacy contract tests.
 func SnapshotLoader(path string) func() (agent.DialogSnapshot, error) {
-	return func() (agent.DialogSnapshot, error) {
-		cfg, err := config.LoadLLM(path)
-		if err != nil {
-			return agent.DialogSnapshot{}, err
-		}
-		snap := agent.DialogSnapshot{Chat: endpointSnapshot(cfg.Chat), Text: endpointSnapshot(cfg.Text), ContextWindowMessages: cfg.ContextWindowMessages}
-		if cfg.Summary != nil {
-			snap.Summary = &agent.SummaryConfig{Snapshot: endpointSnapshot(cfg.Summary.Endpoint), KeepLastMessages: cfg.Summary.KeepLastMessages, BatchSize: cfg.Summary.BatchSize}
-		}
-		if cfg.Facts != nil {
-			snap.Facts = &agent.FactsConfig{Snapshot: endpointSnapshot(cfg.Facts.Endpoint)}
-		}
-		if cfg.Memory != nil {
-			snap.Memory = &agent.FactsConfig{Snapshot: endpointSnapshot(cfg.Memory.Endpoint)}
-		}
-		return snap, nil
-	}
+	return configsnapshot.Loader(path)
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -626,22 +609,6 @@ func (h *Handler) fail(w http.ResponseWriter, status int, category string) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"category": category, "message": msg}})
 }
-func method(w http.ResponseWriter, allowed ...string) {
-	w.Header().Set("Allow", strings.Join(allowed, ", "))
-	w.WriteHeader(405)
-}
-func decode(w http.ResponseWriter, r *http.Request, v any) bool {
-	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
-		return false
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
-	d := json.NewDecoder(r.Body)
-	d.DisallowUnknownFields()
-	if d.Decode(v) != nil {
-		return false
-	}
-	return errors.Is(d.Decode(&struct{}{}), io.EOF)
-}
 
 type messageDTO struct {
 	Usage           *llm.Usage   `json:"usage,omitempty"`
@@ -683,10 +650,6 @@ func listingDTO(l session.Listing) map[string]any {
 		ds = append(ds, dialogDTO(d))
 	}
 	return map[string]any{"dialogs": ds, "selected_dialog_id": l.SelectedDialogID}
-}
-
-func endpointSnapshot(cfg config.LLMEndpoint) agent.Snapshot {
-	return agent.Snapshot{BaseURL: cfg.BaseURL, APIKey: cfg.APIKey, Model: cfg.Model, SystemPrompt: cfg.SystemPrompt, Timeout: cfg.RequestTimeout, Temperature: cfg.Temperature, ContextWindowTokens: cfg.ContextWindowTokens}
 }
 
 func (h *Handler) compact(w http.ResponseWriter, r *http.Request, sid, id string) {

@@ -53,3 +53,20 @@ test("validation, keyboard controls and 390px overflow", async ({ page }) => {
   await expect(dialog).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
 });
+
+for (const width of [390, 1440]) {
+  test(`unbounded profile fields wrap and announce the active profile at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await openProfiles(page);
+    const dialog = page.getByRole("dialog", { name: "Профили ассистента" });
+    const name = unique();
+    await dialog.getByLabel("Название").fill(name);
+    for (const label of ["Стиль", "Ограничения", "Дополнительный контекст"]) await dialog.getByLabel(label, { exact: true }).fill("ДлинныйТекст".repeat(200));
+    await dialog.getByRole("button", { name: "Создать и выбрать" }).click();
+    await expect(dialog.getByText("Активен:")).toContainText(name);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+    await dialog.getByRole("button", { name: "Закрыть профили" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(dialog).toHaveCount(0);
+  });
+}

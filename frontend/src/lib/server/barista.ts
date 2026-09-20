@@ -3,6 +3,8 @@ import "server-only";
 const maxBodyBytes = 32 * 1024 * 1024;
 // One summary followed by one chat completion (default 30s each).
 const timeoutMilliseconds = 65_000;
+// Up to eight sequential task completions plus one memory extraction.
+const taskTimeoutMilliseconds = 300_000;
 const bodyTimeoutMilliseconds = 10_000;
 const sessionCookie = "barista_session";
 const errorCategories = new Set(["config", "validation", "network", "timeout", "provider", "invalid_response", "not_found", "busy", "cancelled", "storage", "context_limit", "memory"]);
@@ -269,7 +271,11 @@ function projectTask(value: unknown): JSONRecord | null {
 function projectTaskCandidate(value: unknown): JSONRecord | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const candidate = value as JSONRecord;
-  if (!only(candidate, ["id", "title", "description"]) || !string(candidate.id) || !string(candidate.title) || !string(candidate.description)) return null;
+  if (!only(candidate, ["id", "title", "description"])) {
+    const task = projectTask(value);
+    return task ? { id: task.id, title: task.title, description: task.description } : null;
+  }
+  if (!string(candidate.id) || !string(candidate.title) || !string(candidate.description)) return null;
   return candidate;
 }
 
@@ -317,14 +323,14 @@ function projectProjectList(value: unknown): JSONRecord | null {
   return projects.every(Boolean) ? { ...item, projects } : null;
 }
 
-async function forward(request: Request, method: string, path: string, body?: JSONRecord): Promise<Response> {
+async function forward(request: Request, method: string, path: string, body?: JSONRecord, timeout = timeoutMilliseconds): Promise<Response> {
   const requestID = crypto.randomUUID();
   const browser = session(request);
   const started = Date.now();
   const observe = path !== "/api/events" && !path.includes("action=poll");
   const dialogID = path.match(/^\/api\/dialogs\/([^/]+)/)?.[1];
   try {
-    const upstream = await fetch(backendURL(path), { method, cache: "no-store", headers: { "X-Session-ID": browser.id, "X-Request-ID": requestID, ...(body ? { "Content-Type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(timeoutMilliseconds) });
+    const upstream = await fetch(backendURL(path), { method, cache: "no-store", headers: { "X-Session-ID": browser.id, "X-Request-ID": requestID, ...(body ? { "Content-Type": "application/json" } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(timeout) });
     if (upstream.status === 204) { if (observe) record(browser, requestID, "bff_request_completed", Date.now() - started, undefined, dialogID); return empty(204, requestID, browser.setCookie); }
     const raw: unknown = await upstream.json().catch(() => null);
     if (!upstream.ok) {
@@ -444,8 +450,8 @@ export async function sendProjectMessage(request: Request, projectID: string, ch
 export async function retryProjectMessage(request: Request, projectID: string, chatID: string, messageID: string): Promise<Response> { return forward(request, "POST", `/api/projects/${encodeURIComponent(projectID)}/chats/${encodeURIComponent(chatID)}/messages/${encodeURIComponent(messageID)}/retry`); }
 export async function taskInput(request: Request, projectID: string, chatID: string): Promise<Response> {
   const requestID = crypto.randomUUID(); const body = await readJSON(request);
-  if (!body || !only(body, ["text", "candidate_task_id"]) || !text(body.text) || (body.candidate_task_id !== undefined && !string(body.candidate_task_id))) return validationFailure(request, requestID, chatID);
-  return forward(request, "POST", `/api/projects/${encodeURIComponent(projectID)}/chats/${encodeURIComponent(chatID)}/tasks/input`, body);
+  if (!body || !only(body, ["text", "candidate_task_id", "client_message_id"]) || !text(body.text) || (body.candidate_task_id !== undefined && !string(body.candidate_task_id)) || (body.client_message_id !== undefined && !string(body.client_message_id))) return validationFailure(request, requestID, chatID);
+  return forward(request, "POST", `/api/projects/${encodeURIComponent(projectID)}/chats/${encodeURIComponent(chatID)}/tasks/input`, body, taskTimeoutMilliseconds);
 }
 export async function pauseTask(request: Request, projectID: string, chatID: string, taskID: string): Promise<Response> {
   const body = await readJSON(request);
@@ -454,8 +460,8 @@ export async function pauseTask(request: Request, projectID: string, chatID: str
 }
 export async function resumeTask(request: Request, projectID: string, chatID: string, taskID: string): Promise<Response> {
   const body = await readJSON(request);
-  if (!body || !only(body, ["text"]) || !text(body.text)) return validationFailure(request, crypto.randomUUID(), chatID);
-  return forward(request, "POST", `/api/projects/${encodeURIComponent(projectID)}/chats/${encodeURIComponent(chatID)}/tasks/${encodeURIComponent(taskID)}/resume`, body);
+  if (!body || !only(body, ["text", "client_message_id"]) || !text(body.text) || (body.client_message_id !== undefined && !string(body.client_message_id))) return validationFailure(request, crypto.randomUUID(), chatID);
+  return forward(request, "POST", `/api/projects/${encodeURIComponent(projectID)}/chats/${encodeURIComponent(chatID)}/tasks/${encodeURIComponent(taskID)}/resume`, body, taskTimeoutMilliseconds);
 }
 export async function getMemory(request: Request, projectID: string): Promise<Response> { return forward(request, "GET", `/api/projects/${encodeURIComponent(projectID)}/memory`); }
 export async function clearMemory(request: Request, projectID: string, layer: "global" | "project"): Promise<Response> { return forward(request, "DELETE", `/api/projects/${encodeURIComponent(projectID)}/memory/${layer}`); }

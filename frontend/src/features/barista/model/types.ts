@@ -4,7 +4,7 @@ export type MemoryStatus = "idle" | "updating" | "success" | "error";
 export type TitleStatus = "idle" | "pending" | "success" | "fallback";
 export type ErrorCategory = "config" | "validation" | "network" | "timeout" | "provider" | "invalid_response" | "not_found" | "busy" | "cancelled" | "storage" | "memory" | "context_limit";
 
-export type BaristaMessage = { id: string; client_message_id?: string; role: MessageRole; text: string; status: MessageStatus; created_at: string; error_category?: ErrorCategory; localOnly?: boolean };
+export type BaristaMessage = { id: string; client_message_id?: string; role: MessageRole; text: string; status: MessageStatus; created_at: string; error_category?: ErrorCategory; localOnly?: boolean; paused?: boolean };
 export type TaskStage = "clarify_input" | "research_input_data" | "execution" | "user_feedback";
 export type TaskStatus = "active" | "paused" | "done";
 export type TaskPlanItemStatus = "pending" | "current" | "completed";
