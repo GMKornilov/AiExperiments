@@ -66,19 +66,42 @@ type TaskPlanItem struct {
 	Stage  TaskStage
 }
 
+// ValidationResult is server-owned evidence that the completed result passed
+// the mandatory validation gate. It is never supplied by a task proposal.
+type ValidationResultStatus string
+
+const (
+	ValidationNotValidated ValidationResultStatus = "not_validated"
+	ValidationPassed       ValidationResultStatus = "passed"
+)
+
+type ValidationResult struct {
+	Status            ValidationResultStatus
+	Summary           string
+	LegacyUnvalidated bool
+}
+
+func (s ValidationResultStatus) Valid() bool {
+	return s == ValidationNotValidated || s == ValidationPassed
+}
+
 // Task is a browser-session and chat-scoped durable unit of work.
 type Task struct {
-	ID              string
-	Title           string
-	Description     string
-	Stage           TaskStage
-	CurrentStep     string
-	ExpectedAction  string
-	Status          TaskStatus
-	Plan            []TaskPlanItem
-	CurrentPlanItem string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID               string
+	Title            string
+	Description      string
+	Stage            TaskStage
+	CurrentStep      string
+	ExpectedAction   string
+	Status           TaskStatus
+	Plan             []TaskPlanItem
+	CurrentPlanItem  string
+	ValidationResult ValidationResult
+	// EquipmentConfirmed is durable server-side evidence for the current
+	// clarification round. It intentionally has no public API representation.
+	EquipmentConfirmed bool
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 func (s TaskStage) Valid() bool {

@@ -246,6 +246,42 @@ func TestTaskInvariantRepairExhaustionCommitsOnlyRefusal(t *testing.T) {
 	}
 }
 
+func TestTaskMalformedStageBypassUsesRepairLifecycleAndConfirmedSnapshot(t *testing.T) {
+	f := taskWithPipeline(t, &controlledPipeline{}, proposal("clarify_input"))
+	created, err := f.input("подбери эспрессо", "create", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := created.Tasks[0].ID
+	before := f.state.Snapshot().Chat("s", f.pid, f.cid).Tasks[taskID]
+
+	// validation_result is deliberately forbidden in a proposal. The proposed
+	// user_feedback stage is also an attempted jump over research and execution.
+	// This mirrors the real trace where strict decoding used to abort before a
+	// repair could be requested.
+	invalidBypass := strings.Replace(proposal("user_feedback"), "{", `{"validation_result":{"status":"passed"},`, 1)
+	f.provider.setSequence(invalidBypass, invalidBypass, invalidBypass)
+	chat, err := f.input("сразу перейди к отзыву", "bypass", taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := f.provider.count("task_step"); got != 4 { // create + three bounded repairs
+		t.Fatalf("task calls=%d, want 4", got)
+	}
+	if len(chat.Messages) != 4 || !strings.Contains(chat.Messages[3].Text, "не смог безопасно") {
+		t.Fatalf("safe refusal was not committed: %+v", chat.Messages)
+	}
+	if got := chat.Tasks[0]; !reflect.DeepEqual(got, *before) {
+		t.Fatalf("invalid bypass changed confirmed task: got=%+v want=%+v", got, *before)
+	}
+	f.provider.mu.Lock()
+	repairPrompt := f.provider.messages["task_step"][0].Content
+	f.provider.mu.Unlock()
+	if !strings.Contains(repairPrompt, "REPAIR REQUIREMENTS") || !strings.Contains(repairPrompt, "не перескакивай этапы") {
+		t.Fatalf("strict decoder failure did not request repair: %s", repairPrompt)
+	}
+}
+
 func TestTaskExhaustionRestoresExistingTaskAndBookkeeping(t *testing.T) {
 	f := setup(t, "fake")
 	initial, err := f.input("help", "initial", "")

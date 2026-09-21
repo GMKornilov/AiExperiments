@@ -33,10 +33,34 @@ func TestProposalInvariants(t *testing.T) {
 			}
 		})
 	}
-	research := Task{ID: "t", Stage: TaskStageResearchInputData, Status: TaskStatusActive, Plan: []TaskPlanItem{{ID: "research", Title: "Собрать данные", Status: TaskPlanItemCurrent}, {ID: "result", Title: "Подготовить результат", Status: TaskPlanItemPending}}, CurrentPlanItem: "research"}
-	feedback := Proposal{Output: "Данные собраны, результат подготовлен", Stage: TaskStageUserFeedback, Status: TaskStatusActive, CurrentStep: "Получить отзыв", ExpectedAction: "user: оценить результат", Plan: []TaskPlanItem{{ID: "research", Title: "Собрать данные", Status: TaskPlanItemCompleted}, {ID: "result", Title: "Подготовить результат", Status: TaskPlanItemCompleted}}}
-	if _, e := ApplyProposal(research, feedback, false); e != nil {
+	research := Task{ID: "t", Stage: TaskStageResearchInputData, Status: TaskStatusActive, ValidationResult: ValidationResult{Status: ValidationNotValidated}, Plan: []TaskPlanItem{{ID: "research", Title: "Собрать данные", Status: TaskPlanItemCurrent}, {ID: "result", Title: "Подготовить результат", Status: TaskPlanItemPending}}, CurrentPlanItem: "research"}
+	execution := Proposal{Output: "Данные собраны", Stage: TaskStageExecution, Status: TaskStatusActive, CurrentStep: "Подготовить результат", ExpectedAction: "agent: подготовить результат", Plan: []TaskPlanItem{{ID: "research", Title: "Собрать данные", Status: TaskPlanItemCompleted}, {ID: "result", Title: "Подготовить результат", Status: TaskPlanItemCurrent}}, CurrentPlanItem: "result"}
+	if _, e := ApplyProposal(research, execution, false); e != nil {
+		t.Fatal("valid adjacent transition rejected", e)
+	}
+	execTask, _ := ApplyProposal(research, execution, false)
+	feedback := Proposal{Output: "Результат подготовлен", Stage: TaskStageUserFeedback, Status: TaskStatusActive, CurrentStep: "Получить отзыв", ExpectedAction: "user: оценить результат", Plan: []TaskPlanItem{{ID: "research", Title: "Собрать данные", Status: TaskPlanItemCompleted}, {ID: "result", Title: "Подготовить результат", Status: TaskPlanItemCompleted}}}
+	if _, e := ApplyProposal(execTask, feedback, false); e != nil {
 		t.Fatal("valid forward stage transition rejected", e)
+	}
+	ungated, _ := ApplyProposal(execTask, feedback, false)
+	if ungated.ValidationResult.Status != ValidationNotValidated {
+		t.Fatal("proposal fabricated validation evidence")
+	}
+}
+
+func TestStageGraphRejectsJumpsAndFeedbackSelfTransition(t *testing.T) {
+	base := Task{ID: "t", Status: TaskStatusActive, ValidationResult: ValidationResult{Status: ValidationNotValidated}, Stage: TaskStageResearchInputData, Plan: []TaskPlanItem{{ID: "p", Title: "Работа", Status: TaskPlanItemCurrent}}, CurrentPlanItem: "p"}
+	proposal := Proposal{Output: "x", Stage: TaskStageUserFeedback, Status: TaskStatusActive, CurrentStep: "Отзыв", ExpectedAction: "user: отзыв", Plan: []TaskPlanItem{{ID: "p", Title: "Работа", Status: TaskPlanItemCompleted}}}
+	if _, err := ApplyProposal(base, proposal, false); err == nil {
+		t.Fatal("research to feedback jump accepted")
+	}
+	base.Stage = TaskStageUserFeedback
+	base.ValidationResult = ValidationResult{Status: ValidationPassed, Summary: "ok"}
+	base.Plan[0].Status = TaskPlanItemCompleted
+	base.CurrentPlanItem = ""
+	if _, err := ApplyProposal(base, proposal, false); err == nil {
+		t.Fatal("feedback self transition accepted")
 	}
 }
 func TestTitleAndProfileUnicode(t *testing.T) {

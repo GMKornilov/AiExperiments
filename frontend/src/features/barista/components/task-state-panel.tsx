@@ -68,6 +68,8 @@ export function TaskStatePanel({ tasks, candidates, pending, onCandidate, detail
         </li>;
       })}</ol>}
       {task.stage === "user_feedback" && task.status !== "done" && <p className={styles.feedbackHint}>Задача ожидает вашу обратную связь.</p>}
+      {task.validation_result?.legacy_unvalidated && <p className={styles.legacyHint} role="status">Результат создан до проверки.</p>}
+      {!task.validation_result?.legacy_unvalidated && task.validation_result?.status === "passed" && (task.stage === "user_feedback" || task.status === "done") && <p className={styles.validationPassed} role="status">Результат проверен. {task.validation_result.summary}</p>}
       {task.status === "done" && <p className={styles.doneHint}>Задача завершена.</p>}
     </li>)}</ul>}
     </div>

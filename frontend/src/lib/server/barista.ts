@@ -125,6 +125,7 @@ function projectMessage(value: unknown): JSONRecord | null {
   if (!value || typeof value !== "object") return null;
   const item = value as JSONRecord;
   if (!only(item, ["id", "client_message_id", "role", "text", "status", "created_at", "error_category", "usage", "attempts"]) || !string(item.id) || (item.role !== "user" && item.role !== "assistant") || typeof item.text !== "string" || !["pending", "success", "error"].includes(item.status as string) || typeof item.created_at !== "string") return null;
+  if (item.role === "assistant" && item.status === "success" && !text(item.text)) return null;
   if (item.client_message_id !== undefined && !string(item.client_message_id)) return null;
   if (item.error_category !== undefined && !errorCategories.has(item.error_category as string)) return null;
   // Attempt accounting stays on the backend; only public message data crosses the BFF.
@@ -267,10 +268,20 @@ function projectTaskPlanItem(value: unknown): JSONRecord | null {
   return item;
 }
 
+function projectValidationResult(value: unknown): JSONRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const result = value as JSONRecord;
+  if (!only(result, ["status", "summary", "legacy_unvalidated"]) || (result.status !== "not_validated" && result.status !== "passed")) return null;
+  if (result.status === "passed" && !string(result.summary)) return null;
+  if (result.status === "not_validated" && result.summary !== undefined) return null;
+  if (result.legacy_unvalidated !== undefined && typeof result.legacy_unvalidated !== "boolean") return null;
+  return result;
+}
+
 function projectTask(value: unknown): JSONRecord | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const task = value as JSONRecord;
-  if (!only(task, ["id", "title", "description", "stage", "current_step", "expected_action", "status", "plan", "current_plan_item", "created_at", "updated_at"]) || !string(task.id) || !string(task.title) || !string(task.description) || !["clarify_input", "research_input_data", "execution", "user_feedback"].includes(task.stage as string) || !string(task.current_step) || typeof task.expected_action !== "string" || !["active", "paused", "done"].includes(task.status as string) || !Array.isArray(task.plan) || typeof task.created_at !== "string" || typeof task.updated_at !== "string") return null;
+  if (!only(task, ["id", "title", "description", "stage", "current_step", "expected_action", "status", "plan", "current_plan_item", "validation_result", "created_at", "updated_at"]) || !string(task.id) || !string(task.title) || !string(task.description) || !["clarify_input", "research_input_data", "execution", "user_feedback"].includes(task.stage as string) || !string(task.current_step) || typeof task.expected_action !== "string" || !["active", "paused", "done"].includes(task.status as string) || !Array.isArray(task.plan) || !projectValidationResult(task.validation_result) || typeof task.created_at !== "string" || typeof task.updated_at !== "string") return null;
   const plan = task.plan.map(projectTaskPlanItem);
   if (!plan.every((item): item is JSONRecord => item !== null) || new Set(plan.map(item => item.id)).size !== plan.length) return null;
   if (task.current_plan_item !== undefined && !string(task.current_plan_item)) return null;

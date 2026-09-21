@@ -60,11 +60,14 @@ func TestJournalCapturesChatTitleAndSummary(t *testing.T) {
 		if len(pair) != 2 || pair[0].Event != "llm_request" || pair[1].Event != "llm_response" || pair[0].CorrelationID == "" || pair[0].Purpose != pair[1].Purpose {
 			t.Fatalf("broken trace pair: %+v", pair)
 		}
-		if !strings.Contains(pair[0].Payload, "messages") {
-			t.Fatal("missing input")
+		if !strings.Contains(pair[0].Payload, `"messages"`) {
+			t.Fatalf("%s request payload does not contain messages: %s", pair[0].Purpose, pair[0].Payload)
 		}
-		if pair[1].Result == "success" && !strings.Contains(pair[1].Payload, "reasoning_content") {
-			t.Fatal("missing raw response")
+		if !strings.Contains(pair[1].Payload, `"reasoning_content":"details"`) {
+			t.Fatalf("%s response payload does not contain reasoning: %s", pair[1].Purpose, pair[1].Payload)
+		}
+		if strings.Contains(pair[0].Payload, "secret") || strings.Contains(pair[1].Payload, "secret") {
+			t.Fatalf("%s payload contains API key", pair[0].Purpose)
 		}
 		purposes[pair[0].Purpose]++
 	}

@@ -59,6 +59,22 @@ func TestCurrentVersionsRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+func TestLegacyFeedbackGetsNeutralValidationMarker(t *testing.T) {
+	data := `{"version":5,"sessions":{"s":{"global_facts":[],"projects":{"p":{"id":"p","title":"Project","project_facts":[],"chats":{"c":{"id":"c","title":"Coffee","title_status":"success","messages":[],"tasks":{"t":{"id":"t","title":"Task","description":"d","stage":"user_feedback","current_step":"feedback","expected_action":"user: feedback","status":"active","plan":[{"id":"p","title":"done","status":"completed"}],"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}}}}}},"profiles":{},"active_profile_id":"barista"}}}`
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, restored, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := restored.Chat("s", "p", "c").Tasks["t"]
+	if task.ValidationResult.Status != model.ValidationNotValidated || !task.ValidationResult.LegacyUnvalidated {
+		t.Fatalf("legacy validation=%+v", task.ValidationResult)
+	}
+}
 func TestHistoricalResetArchivesIndexAndDialogs(t *testing.T) {
 	for _, version := range []string{"1", "2"} {
 		t.Run(version, func(t *testing.T) {

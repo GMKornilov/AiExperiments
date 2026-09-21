@@ -25,7 +25,7 @@ type envelope struct {
 }
 
 func Open(path string) (*Repository, model.State, error) {
-	r := &Repository{path: path, version: 4}
+	r := &Repository{path: path, version: 7}
 	empty := model.State{Sessions: map[string]*model.Browser{}}
 	if path == "" {
 		return r, empty, nil
@@ -46,7 +46,7 @@ func Open(path string) (*Repository, model.State, error) {
 	if header.Version == 1 || header.Version == 2 {
 		return r.resetLegacy(data, header.Version)
 	}
-	if header.Version != 3 && header.Version != 4 && header.Version != 5 {
+	if header.Version != 3 && header.Version != 4 && header.Version != 5 && header.Version != 7 {
 		return nil, empty, state.ErrStorage
 	}
 	var d envelope
@@ -93,8 +93,8 @@ func Open(path string) (*Repository, model.State, error) {
 		return nil, empty, err
 	}
 	r.version = header.Version
-	if r.version == 3 {
-		r.version = 4
+	if r.version < 7 {
+		r.version = 7
 	}
 	// Only normalized/recovered snapshots need a startup write. Archive the
 	// exact source before any migration, retaining the original version for rollback.
@@ -163,6 +163,12 @@ func normalize(s *model.State) error {
 					}
 					if t.Plan == nil {
 						t.Plan = []model.TaskPlanItem{}
+					}
+					if !t.ValidationResult.Status.Valid() {
+						t.ValidationResult = model.ValidationResult{Status: model.ValidationNotValidated}
+						if t.Stage == model.TaskStageUserFeedback || t.Status == model.TaskStatusDone {
+							t.ValidationResult.LegacyUnvalidated = true
+						}
 					}
 					// Older current versions may predate the plan field. Preserve their
 					// confirmed step as the minimal recovery plan, never infer new work.

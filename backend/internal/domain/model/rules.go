@@ -70,7 +70,20 @@ func TruncateRunes(value string, limit int) string {
 }
 
 func ValidateTaskPlan(task *Task) error {
+	return validateTaskPlan(task, false)
+}
+
+// validateTaskPlan permits one in-memory execution→feedback candidate before
+// taskflow has run the mandatory semantic gate. It must never be persisted in
+// that form.
+func validateTaskPlan(task *Task, allowUngatedFeedback bool) error {
 	if task == nil || !task.Stage.Valid() || !task.Status.Valid() || (task.Status == TaskStatusDone && task.Stage != TaskStageUserFeedback) {
+		return ErrValidation
+	}
+	if !task.ValidationResult.Status.Valid() || (task.ValidationResult.Status == ValidationPassed && strings.TrimSpace(task.ValidationResult.Summary) == "") || (task.ValidationResult.Status == ValidationNotValidated && (task.ValidationResult.Summary != "" || task.ValidationResult.LegacyUnvalidated && task.Stage != TaskStageUserFeedback && task.Status != TaskStatusDone)) {
+		return ErrValidation
+	}
+	if (task.Stage == TaskStageUserFeedback || task.Status == TaskStatusDone) && !allowUngatedFeedback && !task.ValidationResult.LegacyUnvalidated && task.ValidationResult.Status != ValidationPassed {
 		return ErrValidation
 	}
 	if len(task.Plan) == 0 {
