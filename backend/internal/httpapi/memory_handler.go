@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"aichallenge/week_1/task_1/internal/application/completion"
+	"aichallenge/week_1/task_1/internal/application/invariant"
 	"aichallenge/week_1/task_1/internal/application/state"
 	"aichallenge/week_1/task_1/internal/domain/model"
 	"aichallenge/week_1/task_1/internal/llm"
@@ -18,7 +19,7 @@ import (
 
 // NewMemory wires endpoint-oriented use cases without owning their implementations.
 func NewMemory(cases UseCases, journal *observability.Journal) http.Handler {
-	return &memoryHandler{projectCases: cases.Projects, chatCases: cases.Chats, profileCases: cases.Profiles, memoryCases: cases.Memory, conversation: cases.Conversations, tasks: cases.Tasks, health: cases.Health, journal: journal}
+	return &memoryHandler{projectCases: cases.Projects, chatCases: cases.Chats, profileCases: cases.Profiles, memoryCases: cases.Memory, conversation: cases.Conversations, tasks: cases.Tasks, health: cases.Health, invariants: cases.Invariants, journal: journal}
 }
 
 type memoryHandler struct {
@@ -29,6 +30,7 @@ type memoryHandler struct {
 	conversation Conversation
 	tasks        Tasks
 	health       Health
+	invariants   []invariant.Metadata
 	journal      *observability.Journal
 }
 type memoryStatusWriter struct {
@@ -98,6 +100,14 @@ func (h *memoryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.URL.Path == "/api/invariants" {
+		if r.Method != http.MethodGet {
+			method(w, http.MethodGet)
+			return
+		}
+		writeMemory(w, map[string]any{"invariants": h.invariants})
 		return
 	}
 	if h.health.StorageError() != nil {

@@ -19,6 +19,7 @@ import (
 	"aichallenge/week_1/task_1/internal/adapters/statejson"
 	"aichallenge/week_1/task_1/internal/agent"
 	"aichallenge/week_1/task_1/internal/application/conversation"
+	"aichallenge/week_1/task_1/internal/application/invariant"
 	"aichallenge/week_1/task_1/internal/application/state"
 	"aichallenge/week_1/task_1/internal/application/taskflow"
 	"aichallenge/week_1/task_1/internal/application/workspace"
@@ -30,6 +31,26 @@ import (
 type memoryProvider struct {
 	mu    sync.Mutex
 	calls int
+}
+
+func TestInvariantMetadataAPIIsPublicAndReadOnly(t *testing.T) {
+	h := NewMemory(UseCases{Invariants: []invariant.Metadata{{ID: "equipment-availability", Name: "Доступность оборудования", Description: "Описание"}}}, observability.NewJournal(false, nil))
+	status, body := callMemory(t, h, http.MethodGet, "/api/invariants", "")
+	if status != http.StatusOK {
+		t.Fatalf("GET status=%d body=%v", status, body)
+	}
+	items, ok := body["invariants"].([]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("contract=%v", body)
+	}
+	item := items[0].(map[string]any)
+	if item["id"] != "equipment-availability" || item["name"] != "Доступность оборудования" || item["description"] != "Описание" || len(item) != 3 {
+		t.Fatalf("unsafe or incomplete metadata=%v", item)
+	}
+	status, _ = callMemory(t, h, http.MethodPost, "/api/invariants", "")
+	if status != http.StatusMethodNotAllowed {
+		t.Fatalf("POST status=%d", status)
+	}
 }
 
 func (p *memoryProvider) Complete(_ context.Context, snap agent.Snapshot, _ []llm.Message) (string, error) {
@@ -48,7 +69,7 @@ func (p *memoryProvider) Complete(_ context.Context, snap agent.Snapshot, _ []ll
 	return `{"global_facts":[],"project_facts":[]}`, nil
 }
 func memorySnapshot() agent.DialogSnapshot {
-	return agent.DialogSnapshot{Chat: agent.Snapshot{BaseURL: "https://x", APIKey: "k", Model: "chat", SystemPrompt: "base", Timeout: time.Second, Temperature: 1}, Text: agent.Snapshot{BaseURL: "https://x", APIKey: "k", Model: "text", SystemPrompt: "text", Timeout: time.Second, Temperature: 1}, Memory: &agent.FactsConfig{Snapshot: agent.Snapshot{BaseURL: "https://x", APIKey: "k", Model: "memory", SystemPrompt: "memory", Timeout: time.Second, Temperature: 0}}, ContextWindowMessages: 3}
+	return agent.DialogSnapshot{Chat: agent.Snapshot{BaseURL: "https://x", APIKey: "k", Model: "chat", SystemPrompt: "base", Timeout: time.Second, Temperature: 1}, Text: agent.Snapshot{BaseURL: "https://x", APIKey: "k", Model: "text", SystemPrompt: "text", Timeout: time.Second, Temperature: 1}, Memory: &agent.FactsConfig{Snapshot: agent.Snapshot{BaseURL: "https://x", APIKey: "k", Model: "memory", SystemPrompt: "memory", Timeout: time.Second, Temperature: 0}}, InvariantValidation: &agent.FactsConfig{Snapshot: agent.Snapshot{BaseURL: "https://x", APIKey: "k", Model: "validator", SystemPrompt: "validator", Timeout: time.Second, Temperature: 0}}, ContextWindowMessages: 3}
 }
 func callMemory(t *testing.T, h http.Handler, method, path, body string) (int, map[string]any) {
 	t.Helper()
@@ -273,7 +294,8 @@ func newActiveTestStore(t *testing.T, provider agent.Provider, snap agent.Dialog
 	t.Cleanup(func() { manager.Close(); titles.Close() })
 	extractor := extractjson.NewExtractor(client, snap.Memory.Snapshot.SystemPrompt)
 	settings := conversation.Settings{Prompt: snap.Chat.SystemPrompt, Window: snap.ContextWindowMessages}
-	return &activeTestStore{Service: workspace.New(manager, manager, id, time.Now), conversation: conversation.New(manager, client, extractor, titles, settings, id, time.Now), tasks: taskflow.New(manager, client, extractor, extractjson.ProposalDecoder{}, model.TaskRouter{}, titles, settings, id, time.Now), state: manager}, nil
+	allow := invariant.Set{}
+	return &activeTestStore{Service: workspace.New(manager, manager, id, time.Now), conversation: conversation.New(manager, client, extractor, titles, settings, id, time.Now, allow), tasks: taskflow.New(manager, client, extractor, extractjson.ProposalDecoder{}, model.TaskRouter{}, titles, settings, id, time.Now, allow), state: manager}, nil
 }
 
 func TestActiveContractErrorsAreSafe(t *testing.T) {

@@ -24,6 +24,9 @@ func New(provider agent.Provider, snapshot agent.DialogSnapshot) (*Client, error
 	if snapshot.Memory == nil {
 		return nil, errors.New("memory extractor не настроен")
 	}
+	if snapshot.InvariantValidation == nil {
+		return nil, errors.New("invariant validation не настроена")
+	}
 	return &Client{provider: provider, snapshot: snapshot}, nil
 }
 func (c *Client) Complete(ctx context.Context, purpose string, messages []completion.Message) (answer string, err error) {
@@ -33,6 +36,8 @@ func (c *Client) Complete(ctx context.Context, purpose string, messages []comple
 		snap = c.snapshot.Text
 	case "memory_extractor":
 		snap = c.snapshot.Memory.Snapshot
+	case "invariant_equipment-availability", "invariant_beans-availability", "invariant_inventory-truth":
+		snap = c.snapshot.InvariantValidation.Snapshot
 	}
 	call, cancel := context.WithTimeout(llm.WithPurpose(ctx, purpose), snap.Timeout)
 	defer cancel()

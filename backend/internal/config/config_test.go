@@ -40,7 +40,7 @@ func TestLoadLLMValidationAndRelativePrompt(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("system"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	valid := "chat:\n  base_url: https://example.test/v1\n  api_key: secret\n  model: model\n  system_prompt_path: prompt.txt\ntext:\n  base_url: https://example.test/v1\n  api_key: secret\n  model: title\n  system_prompt_path: prompt.txt\n"
+	valid := "chat:\n  base_url: https://example.test/v1\n  api_key: secret\n  model: model\n  system_prompt_path: prompt.txt\ntext:\n  base_url: https://example.test/v1\n  api_key: secret\n  model: title\n  system_prompt_path: prompt.txt\ninvariant_validation:\n  base_url: https://example.test/v1\n  api_key: secret\n  model: validator\n  system_prompt_path: prompt.txt\n"
 	if err := os.WriteFile(filepath.Join(dir, "llm.yaml"), []byte(valid), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestLoadLLMValidationAndRelativePrompt(t *testing.T) {
 		t.Fatalf("default temperatures %#v %v", cfg, err)
 	}
 	for _, temperature := range []string{"0", "2", "null", "3", "-1", "NaN", ".inf"} {
-		body := "chat:\n  base_url: https://example.test\n  api_key: x\n  model: x\n  temperature: " + temperature + "\n  system_prompt_path: prompt.txt\ntext:\n  base_url: https://example.test\n  api_key: x\n  model: x\n  temperature: 0\n  system_prompt_path: prompt.txt\n"
+		body := "chat:\n  base_url: https://example.test\n  api_key: x\n  model: x\n  temperature: " + temperature + "\n  system_prompt_path: prompt.txt\ntext:\n  base_url: https://example.test\n  api_key: x\n  model: x\n  temperature: 0\n  system_prompt_path: prompt.txt\ninvariant_validation:\n  base_url: https://example.test\n  api_key: x\n  model: validator\n  system_prompt_path: prompt.txt\n"
 		if err := os.WriteFile(filepath.Join(dir, "temperature.yaml"), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -98,7 +98,7 @@ func TestLoadLLMExpandsEnvironmentPlaceholder(t *testing.T) {
 	}
 	t.Setenv("CONFIG_TEST_API_KEY", "from-environment")
 	path := filepath.Join(dir, "llm.yaml")
-	body := "chat:\n  base_url: https://example.test\n  api_key: ${CONFIG_TEST_API_KEY}\n  model: chat\n  system_prompt_path: prompt.txt\ntext:\n  base_url: https://example.test\n  api_key: ${CONFIG_TEST_API_KEY}\n  model: text\n  system_prompt_path: prompt.txt\n"
+	body := "chat:\n  base_url: https://example.test\n  api_key: ${CONFIG_TEST_API_KEY}\n  model: chat\n  system_prompt_path: prompt.txt\ntext:\n  base_url: https://example.test\n  api_key: ${CONFIG_TEST_API_KEY}\n  model: text\n  system_prompt_path: prompt.txt\ninvariant_validation:\n  base_url: https://example.test\n  api_key: ${CONFIG_TEST_API_KEY}\n  model: validator\n  system_prompt_path: prompt.txt\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -109,6 +109,21 @@ func TestLoadLLMExpandsEnvironmentPlaceholder(t *testing.T) {
 	}
 	if cfg.Chat.APIKey != "from-environment" || cfg.Text.APIKey != "from-environment" {
 		t.Fatalf("ключи не подставлены: chat=%q text=%q", cfg.Chat.APIKey, cfg.Text.APIKey)
+	}
+}
+
+func TestLoadLLMRequiresInvariantValidation(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte("system"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "llm.yaml")
+	body := "chat:\n  base_url: https://example.test\n  api_key: x\n  model: chat\n  system_prompt_path: prompt.txt\ntext:\n  base_url: https://example.test\n  api_key: x\n  model: text\n  system_prompt_path: prompt.txt\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadLLM(path); err == nil || !strings.Contains(err.Error(), "invariant_validation") {
+		t.Fatalf("missing invariant config accepted: %v", err)
 	}
 }
 

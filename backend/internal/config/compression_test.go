@@ -12,7 +12,7 @@ func TestSummaryConfigurationDefaultsAndValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	endpoint := "  base_url: https://example.com\n  api_key: secret\n  model: test\n  system_prompt_path: prompt.txt\n"
-	base := "chat:\n" + endpoint + "text:\n" + endpoint
+	base := "chat:\n" + endpoint + "text:\n" + endpoint + "invariant_validation:\n" + endpoint
 	for _, tc := range []struct {
 		name, extra string
 		valid       bool

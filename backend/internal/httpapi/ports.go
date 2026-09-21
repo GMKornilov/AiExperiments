@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 
+	"aichallenge/week_1/task_1/internal/application/invariant"
 	"aichallenge/week_1/task_1/internal/domain/model"
 )
 
@@ -50,6 +51,7 @@ type UseCases struct {
 	Conversations Conversation
 	Tasks         Tasks
 	Health        Health
+	Invariants    []invariant.Metadata
 }
 
 func responseDTO(v any) any {

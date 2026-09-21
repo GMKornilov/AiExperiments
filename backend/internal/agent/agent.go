@@ -63,6 +63,7 @@ type DialogSnapshot struct {
 	Summary               *SummaryConfig `json:"summary,omitempty"`
 	Facts                 *FactsConfig   `json:"facts,omitempty"`
 	Memory                *FactsConfig   `json:"memory,omitempty"`
+	InvariantValidation   *FactsConfig   `json:"invariant_validation,omitempty"`
 	ContextWindowMessages int            `json:"context_window_messages"`
 }
 
@@ -108,6 +109,11 @@ func (s DialogSnapshot) Validate() error {
 	if s.Memory != nil {
 		if err := s.Memory.Snapshot.Validate(); err != nil {
 			return fmt.Errorf("memory: %w", err)
+		}
+	}
+	if s.InvariantValidation != nil {
+		if err := s.InvariantValidation.Snapshot.Validate(); err != nil {
+			return fmt.Errorf("invariant_validation: %w", err)
 		}
 	}
 	if err := s.Chat.Validate(); err != nil {

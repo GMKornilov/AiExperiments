@@ -49,7 +49,7 @@ test("response waits for extractor; facts persist through refresh and layer clea
   await panel.getByRole("heading", { name: "Общая память" }).locator("..").getByRole("button", { name: "Очистить" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Очистить" }).click();
   await expect(panel.getByText("Фактов пока нет.").first()).toBeVisible();
-  await expect(panel.getByText("Есть зёрна: Эфиопия")).toBeVisible();
+  await expect(panel.getByText("Есть зёрна: Эфиопия")).toHaveCount(0);
 });
 
 for (const trigger of ["memory-error", "memory-invalid"]) {
@@ -71,24 +71,49 @@ for (const trigger of ["memory-error", "memory-invalid"]) {
   });
 }
 
-test("chat deletion preserves project memory; deleting another project leaves global memory", async ({ page }) => {
+test("chat deletion preserves explicitly project-scoped memory; deleting another project leaves global memory", async ({ page }) => {
   await newProjectWithChat(page);
   await sendAndWait(page, "У меня есть V60 и зёрна Эфиопия");
+  await sendAndWait(page, "Только для этого проекта есть зёрна Кения");
   await page.getByRole("button", { name: /Удалить чат/i }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Удалить" }).click();
   await expect(page.getByRole("button", { name: "Создать чат" })).toBeVisible();
   await page.getByRole("button", { name: "Создать чат" }).click();
   let panel = await openMemory(page);
-  await expect(panel.getByText("Есть зёрна: Эфиопия")).toBeVisible();
+  await expect(panel.getByText("Есть зёрна: Кения")).toBeVisible();
   await page.getByRole("button", { name: /Новый проект/i }).first().click();
   await page.getByRole("button", { name: "Создать чат" }).click();
   panel = await openMemory(page);
   await expect(panel.getByText("Оборудование: V60")).toBeVisible();
-  await expect(panel.getByText("Есть зёрна: Эфиопия")).toHaveCount(0);
+  await expect(panel.getByText("Есть зёрна: Эфиопия")).toBeVisible();
+  await expect(panel.getByText("Есть зёрна: Кения")).toHaveCount(0);
   await page.getByRole("button", { name: /Удалить проект/i }).first().click();
   await page.getByRole("dialog").getByRole("button", { name: "Удалить" }).click();
   panel = await openMemory(page);
   await expect(panel.getByText("Оборудование: V60")).toBeVisible();
+});
+
+test("панель инвариантов доступна read-only, а pre-conflict создаёт refusal и сохраняет negative global fact", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await newProjectWithChat(page);
+  const toggle = page.getByRole("button", { name: "Инварианты" });
+  await toggle.focus(); await page.keyboard.press("Enter");
+  const panel = page.getByRole("complementary", { name: "Инварианты" });
+  await expect(panel.getByRole("heading", { name: "Инварианты" })).toBeVisible();
+  await expect(panel.getByRole("heading", { name: "Доступность оборудования" })).toBeVisible();
+  await expect(panel.getByRole("heading", { name: "Доступность зёрен" })).toBeVisible();
+  await expect(panel.getByRole("heading", { name: "Достоверность инвентаря" })).toBeVisible();
+  await expect(panel.getByRole("button")).toHaveCount(0);
+  expect(await toggle.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+
+  await page.getByLabel("Ваш вопрос").fill("invariant-equipment-pre-conflict V60 сломан, сделай рецепт на V60");
+  await page.getByRole("button", { name: "Отправить" }).click();
+  await expect(page.getByText(/Доступность оборудования/).last()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("Ответ: invariant-equipment-pre-conflict V60 сломан, сделай рецепт на V60 [e2e-fixture-model]")).toHaveCount(0);
+  const memory = await openMemory(page);
+  await expect(memory.getByText("Оборудование: V60 — сломано")).toBeVisible();
+  await expect(memory.getByText("Память обновлена")).toBeVisible();
 });
 
 test("another browser context is isolated", async ({ browser }) => {

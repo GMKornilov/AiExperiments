@@ -1,6 +1,5 @@
 "use client";
 
-import { useId, useState } from "react";
 import type { Task, TaskCandidate, TaskPlanItem } from "../model/types";
 import styles from "./task-state-panel.module.css";
 
@@ -19,9 +18,11 @@ type Props = {
   candidates: TaskCandidate[];
   pending: boolean;
   onCandidate: (candidate: TaskCandidate) => void;
+  detailsID: string;
+  open: boolean;
 };
 
-const statusSummary = (tasks: Task[]) => {
+export const taskStatusSummary = (tasks: Task[]) => {
   const active = tasks.filter(task => task.status === "active").length;
   const paused = tasks.filter(task => task.status === "paused").length;
   if (active > 0) return `${active} в работе`;
@@ -32,16 +33,12 @@ const statusSummary = (tasks: Task[]) => {
 
 const planState = (task: Task, item: TaskPlanItem): TaskPlanItem["status"] => task.status === "done" ? "completed" : item.status;
 
-export function TaskStatePanel({ tasks, candidates, pending, onCandidate }: Props) {
-  const [open, setOpen] = useState(false);
-  const detailsID = useId();
+export function TaskStatePanel({ tasks, candidates, pending, onCandidate, detailsID, open }: Props) {
   const detailsOpen = open || candidates.length > 0;
+  if (!detailsOpen) return null;
 
   return <section className={styles.panel} aria-label="Состояние задач">
-    <button className={styles.toggle} type="button" aria-expanded={detailsOpen} aria-controls={detailsID} onClick={() => setOpen(value => !value)}>
-      <span>Задачи</span><span className={styles.summary}>{statusSummary(tasks)}</span><span aria-hidden="true">{detailsOpen ? "⌃" : "⌄"}</span>
-    </button>
-    {detailsOpen && <div id={detailsID} className={styles.details}>
+    <div id={detailsID} className={styles.details}>
       {candidates.length > 0 && <section className={styles.candidates} aria-labelledby="task-candidates-title">
       <h3 id="task-candidates-title">К какой задаче относится сообщение?</h3>
       <p>Выберите задачу, чтобы продолжить её. Агент не будет выбирать за вас.</p>
@@ -73,6 +70,6 @@ export function TaskStatePanel({ tasks, candidates, pending, onCandidate }: Prop
       {task.stage === "user_feedback" && task.status !== "done" && <p className={styles.feedbackHint}>Задача ожидает вашу обратную связь.</p>}
       {task.status === "done" && <p className={styles.doneHint}>Задача завершена.</p>}
     </li>)}</ul>}
-    </div>}
+    </div>
   </section>;
 }

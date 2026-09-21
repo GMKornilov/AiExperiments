@@ -1,17 +1,18 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import { CollapsibleMessage } from "./collapsible-message";
 import { ProfileManager } from "./profile-manager";
-import { TaskStatePanel } from "./task-state-panel";
+import { TaskStatePanel, taskStatusSummary } from "./task-state-panel";
 import { BaristaAPIError, baristaClient, userFacingError } from "../lib/chat-client";
-import type { BaristaMessage, Chat, Memory, ProfileList, Project, ProjectList, Task, TaskCandidate } from "../model/types";
+import type { BaristaMessage, Chat, Invariant, Memory, ProfileList, Project, ProjectList, Task, TaskCandidate } from "../model/types";
 import styles from "./barista-workspace.module.css";
 
 type Confirmation = { kind: "project"; project: Project } | { kind: "chat"; chat: Chat } | { kind: "memory"; layer: "global" | "project" };
 type TaskInputAttempt = { text: string; cancellationRequested: boolean; taskID?: string };
 const emptyMemory: Memory = { global_facts: [], project_facts: [], status: "idle" };
 const messageError = (message: BaristaMessage) => message.status === "error" ? userFacingError(new BaristaAPIError(message.error_category ?? "network")) : null;
+const isInvariantValidationError = (cause: unknown) => cause instanceof BaristaAPIError && cause.category === "invariant_validation";
 
 export function BaristaWorkspace() {
   const [data, setData] = useState<ProjectList>({ projects: [] });
@@ -24,6 +25,11 @@ export function BaristaWorkspace() {
   const [profilesOpen, setProfilesOpen] = useState(false);
   const [ready, setReady] = useState(false); const [pending, setPending] = useState(false);
   const [memoryOpen, setMemoryOpen] = useState(false); const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [invariantsOpen, setInvariantsOpen] = useState(false);
+  const [invariants, setInvariants] = useState<Invariant[]>([]);
+  const [invariantsLoading, setInvariantsLoading] = useState(false);
+  const [invariantsError, setInvariantsError] = useState<string | null>(null);
+  const [tasksOpen, setTasksOpen] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [renameTarget, setRenameTarget] = useState<Project | null>(null); const [renameTitle, setRenameTitle] = useState("");
   const [draft, setDraft] = useState(""); const [error, setError] = useState<string | null>(null);
@@ -37,6 +43,7 @@ export function BaristaWorkspace() {
   const taskRevision = useRef(0);
   const taskInputAttempts = useRef(new Map<string, TaskInputAttempt>());
   const activeTaskInputAttemptID = useRef<string | null>(null);
+  const taskDetailsID = useId();
 
   const selectedProject = useMemo(() => data.projects.find((project) => project.id === selectedProjectID) ?? null, [data, selectedProjectID]);
   const selectedChat = useMemo(() => selectedProject?.chats.find((chat) => chat.id === selectedChatID) ?? null, [selectedProject, selectedChatID]);
@@ -72,6 +79,19 @@ export function BaristaWorkspace() {
     try { setProfiles(await baristaClient.profiles()); }
     catch (cause) { setProfilesError(userFacingError(cause)); }
     finally { setProfilesLoading(false); }
+  }
+  async function loadInvariants() {
+    setInvariantsLoading(true); setInvariantsError(null);
+    try { setInvariants((await baristaClient.invariants()).invariants); }
+    catch { setInvariantsError("Не удалось загрузить инварианты."); }
+    finally { setInvariantsLoading(false); }
+  }
+  function toggleInvariants() {
+    setInvariantsOpen(open => {
+      const next = !open;
+      if (next && !invariantsLoading) void loadInvariants();
+      return next;
+    });
   }
   useEffect(() => {
     // Establish the HttpOnly session cookie before another first-load request
@@ -163,7 +183,7 @@ export function BaristaWorkspace() {
       if (activeTaskInputAttemptID.current === messageID) activeTaskInputAttemptID.current = null;
       try { setMemory(await baristaClient.memory(selectedProject.id)); }
       catch { setMemory(current => ({ ...current, status: "error", error_category: category })); }
-      setError(userFacingError(cause));
+      if (!isInvariantValidationError(cause)) setError(userFacingError(cause));
     }
     finally {
       if (cancellationRequested(messageID) || revision !== taskRevision.current) return;
@@ -222,7 +242,7 @@ export function BaristaWorkspace() {
         taskInputAttempts.current.delete(message.id); replaceChat(result.chat); setTaskCandidates(result.candidates ?? []); setCandidateInput(taskInput.text); setMemory(await baristaClient.memory(selectedProject.id));
       }
       catch (cause) {
-        updateLocalTaskInput(selectedProject.id, selectedChat.id, message.id, "error", cause instanceof BaristaAPIError ? cause.category : "network"); setError(userFacingError(cause));
+        updateLocalTaskInput(selectedProject.id, selectedChat.id, message.id, "error", cause instanceof BaristaAPIError ? cause.category : "network"); if (!isInvariantValidationError(cause)) setError(userFacingError(cause));
       }
       finally { setPending(false); }
       return;
@@ -256,9 +276,10 @@ export function BaristaWorkspace() {
       <nav className={styles.projectList}>{data.projects.map(project => <section key={project.id} className={styles.projectRow}><div className={styles.dialogMainRow}><button className={project.id === selectedProjectID ? styles.selectedDialog : styles.dialogButton} type="button" onClick={() => void selectProject(project)}>{project.title || "Новый проект"}</button><button className={styles.renameButton} type="button" aria-label={`Переименовать проект ${project.title}`} onClick={() => { setRenameTarget(project); setRenameTitle(project.title); }}>✎</button><button className={styles.deleteButton} type="button" aria-label={`Удалить проект ${project.title}`} onClick={() => setConfirmation({ kind: "project", project })}>×</button></div>{project.id === selectedProjectID && <div className={styles.chatList}>{project.chats.map(chat => <div className={styles.dialogMainRow} key={chat.id}><button className={chat.id === selectedChatID ? styles.selectedDialog : styles.dialogButton} type="button" onClick={() => void selectChat(chat)}>{chat.title || "Новый чат"}</button><button className={styles.deleteButton} type="button" aria-label={`Удалить чат ${chat.title}`} onClick={() => setConfirmation({ kind: "chat", chat })}>×</button></div>)}<button className={styles.addChat} type="button" disabled={pending} onClick={() => void createChat()}>+ Новый чат</button></div>}</section>)}</nav>
     </aside>
     <main className={styles.chat} aria-busy={!ready || pending}>{error && <p className={styles.error} role="alert">{error}</p>}{resumeRetry && <button type="button" disabled={pending} onClick={() => void resumeTask(resumeRetry)}>Повторить продолжение</button>}<p className={styles.srOnly} role="status" aria-live="polite">{status}</p>
-      {!ready ? <div className={styles.empty}>Загружаем проекты…</div> : !selectedProject ? <div className={styles.empty}><h2>Создайте проект</h2><p>В проекте можно вести несколько независимых чатов.</p><button type="button" disabled={pending} onClick={() => void createProject()}>Новый проект</button></div> : !selectedChat ? <div className={styles.empty}><h2>{selectedProject.title || "Новый проект"}</h2><p>В этом проекте пока нет чатов.</p><button type="button" disabled={pending} onClick={() => void createChat()}>Создать чат</button></div> : <><header className={styles.chatHeader}><div><h1>{selectedChat.title}</h1><p>{selectedProject.title}</p>{selectedChat.title_status === "pending" && <p className={styles.titlePending} role="status">Обновляем название…</p>}</div><button className={styles.memoryButton} type="button" aria-expanded={memoryOpen} onClick={() => setMemoryOpen(value => !value)}>Память</button></header>
-      {memoryOpen && <aside className={styles.memoryPanel} aria-label="Память"><MemorySection title="Общая память" facts={memory.global_facts} onClear={() => setConfirmation({ kind: "memory", layer: "global" })} disabled={pending}/><MemorySection title="Память проекта" facts={memory.project_facts} onClear={() => setConfirmation({ kind: "memory", layer: "project" })} disabled={pending}/><p role="status">{status}</p></aside>}
-      <TaskStatePanel tasks={selectedChat.tasks ?? []} candidates={taskCandidates} pending={pending} onCandidate={candidate => void selectTaskCandidate(candidate)} />
+      {!ready ? <div className={styles.empty}>Загружаем проекты…</div> : !selectedProject ? <div className={styles.empty}><h2>Создайте проект</h2><p>В проекте можно вести несколько независимых чатов.</p><button type="button" disabled={pending} onClick={() => void createProject()}>Новый проект</button></div> : !selectedChat ? <div className={styles.empty}><h2>{selectedProject.title || "Новый проект"}</h2><p>В этом проекте пока нет чатов.</p><button type="button" disabled={pending} onClick={() => void createChat()}>Создать чат</button></div> : <><header className={styles.chatHeader}><div><h1>{selectedChat.title}</h1><p>{selectedProject.title}</p>{selectedChat.title_status === "pending" && <p className={styles.titlePending} role="status">Обновляем название…</p>}</div><div className={styles.headerActions}><button className={`${styles.memoryButton} ${styles.taskButton}`} type="button" aria-expanded={tasksOpen || taskCandidates.length > 0} aria-controls={taskDetailsID} onClick={() => setTasksOpen(value => !value)}><span>Задачи</span><span className={styles.taskSummary}>{taskStatusSummary(selectedChat.tasks ?? [])}</span><span aria-hidden="true">{tasksOpen || taskCandidates.length > 0 ? "⌃" : "⌄"}</span></button><button className={styles.memoryButton} type="button" aria-expanded={memoryOpen} aria-controls="memory-panel" onClick={() => setMemoryOpen(value => !value)}>Память</button><button className={styles.memoryButton} type="button" aria-expanded={invariantsOpen} aria-controls="invariants-panel" onClick={toggleInvariants}>Инварианты</button></div></header>
+      {memoryOpen && <aside id="memory-panel" className={styles.memoryPanel} aria-label="Память"><MemorySection title="Общая память" facts={memory.global_facts} onClear={() => setConfirmation({ kind: "memory", layer: "global" })} disabled={pending}/><MemorySection title="Память проекта" facts={memory.project_facts} onClear={() => setConfirmation({ kind: "memory", layer: "project" })} disabled={pending}/><p role="status">{status}</p></aside>}
+      {invariantsOpen && <InvariantPanel invariants={invariants} loading={invariantsLoading} error={invariantsError} onRetry={() => void loadInvariants()} />}
+      <TaskStatePanel tasks={selectedChat.tasks ?? []} candidates={taskCandidates} pending={pending} onCandidate={candidate => void selectTaskCandidate(candidate)} detailsID={taskDetailsID} open={tasksOpen} />
       <section className={styles.messages} aria-label="Переписка" aria-live="polite">{selectedChat.messages.length === 0 && <div className={styles.empty}><p>Спросите о зёрнах, помоле или рецепте.</p></div>}{selectedChat.messages.map(message => <article className={`${styles.bubble} ${message.role === "user" ? styles.userBubble : styles.assistantBubble}`} key={message.id}><div className={styles.messageActions}><span>{message.role === "user" ? "Вы" : "Бариста"}</span></div><CollapsibleMessage text={message.text}/>{message.status === "pending" && <p className={styles.status} role="status">{message.paused ? "Задача на паузе" : "Бариста готовит ответ и обновляет память…"}</p>}{message.status === "error" && <div className={styles.failed}><p>{messageError(message)}</p>{message.role === "user" && <button type="button" onClick={() => void retry(message)}>Повторить</button>}</div>}</article>)}</section>
       <form className={styles.composer} onSubmit={(event: FormEvent) => { event.preventDefault(); if (pending && activeTask) void pauseTask(activeTask); else if (!pending && pausedTask && !draft.trim()) void resumeTask(pausedTask); else void submitMessage(); }}><section className={styles.contextStatus} aria-label="Статус диалога"><div className={styles.threadID}><span>ID чата</span><code>ID: {selectedChat.id}</code><button type="button" aria-label="Копировать ID чата" onClick={() => void copyChatID()}>Копировать</button></div>{copyStatus && <p className={styles.copyStatus} role="status" aria-live="polite">{copyStatus}</p>}</section><label htmlFor="barista-message">Ваш вопрос</label><textarea id="barista-message" value={draft} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.nativeEvent.isComposing || event.key !== "Enter" || event.shiftKey) return; event.preventDefault(); if (draft.trim() && !pending) void submitMessage(); }} disabled={pending} rows={3}/><div><span role="status">{status}</span>{pending && activeTask ? <button className={styles.composerStop} type="submit" disabled={pausingTaskID === activeTask.id}>Остановить</button> : !pending && pausedTask && !draft.trim() ? <button type="submit">Продолжить</button> : <button type="submit" disabled={pending || !draft.trim()}>Отправить</button>}</div></form></>}
     </main>
@@ -269,3 +290,12 @@ export function BaristaWorkspace() {
 }
 
 function MemorySection({ title, facts, onClear, disabled }: { title: string; facts: string[]; onClear: () => void; disabled: boolean }) { return <section className={styles.memorySection}><h2>{title}</h2>{facts.length ? <ul>{facts.map((fact, index) => <li key={`${fact}-${index}`}>{fact}</li>)}</ul> : <p>Фактов пока нет.</p>}<button type="button" onClick={onClear} disabled={disabled}>Очистить</button></section>; }
+
+function InvariantPanel({ invariants, loading, error, onRetry }: { invariants: Invariant[]; loading: boolean; error: string | null; onRetry: () => void }) {
+  return <aside id="invariants-panel" className={styles.invariantsPanel} aria-label="Инварианты" aria-busy={loading}>
+    <h2>Инварианты</h2>
+    {loading && <p role="status">Загружаем правила…</p>}
+    {error && <div className={styles.panelError} role="alert"><p>{error}</p><button type="button" onClick={onRetry}>Повторить</button></div>}
+    {!loading && !error && <ul>{invariants.map(invariant => <li key={invariant.id}><h3>{invariant.name}</h3><p>{invariant.description}</p></li>)}</ul>}
+  </aside>;
+}

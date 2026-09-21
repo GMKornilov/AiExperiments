@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { adminLogs, createDialog, createProfile, deleteProfile, getMemory, listDialogs, listProfiles, listProjects, pauseTask, renameProject, resumeTask, selectProfile, sendMessage, taskInput } from "./barista";
+import { adminLogs, createDialog, createProfile, deleteProfile, getMemory, listDialogs, listInvariants, listProfiles, listProjects, pauseTask, renameProject, resumeTask, selectProfile, sendMessage, taskInput } from "./barista";
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
@@ -7,6 +7,22 @@ const dialog = { id: "d", title: "Новый диалог", title_status: "idle"
 const createRequest = (init: RequestInit = {}) => new Request("http://web/api/dialogs", { ...init, method: "POST", headers: { "content-type": "application/json", ...(init.headers ?? {}) }, body: JSON.stringify({ context_strategy: "summary" }) });
 
 describe("barista BFF", () => {
+  it("строго проецирует три публичных инварианта без служебных полей", async () => {
+    const invariants = { invariants: [
+      { id: "equipment-availability", name: "Доступность оборудования", description: "Не использовать сломанное оборудование." },
+      { id: "beans-availability", name: "Доступность зёрен", description: "Не предлагать закончившиеся зёрна." },
+      { id: "inventory-truth", name: "Достоверность инвентаря", description: "Не выдумывать инвентарь." },
+    ] };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ ...invariants, transport: "private" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const invalid = await listInvariants(new Request("http://web/api/invariants"));
+    expect(invalid.status).toBe(502);
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(invariants)));
+    const result = await listInvariants(new Request("http://web/api/invariants"));
+    expect(result.status).toBe(200);
+    expect(await result.json()).toEqual(invariants);
+  });
   it("передаёт произвольные поля журнала Admin без BFF-валидации", async () => {
     const logs = { found: true, log_text_payloads: false, logs: [{ timestamp: "2026-01-01T00:00:00Z", source: "backend", event: "llm_response", result: "success", correlation_id: "request-1", dialog_id: "chat-1", purpose: "future_backend_purpose", provider_trace: { model: "new-model", retry: 2 }, new_flag: true }] };
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(logs)));

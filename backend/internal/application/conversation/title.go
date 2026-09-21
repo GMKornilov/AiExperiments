@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"aichallenge/week_1/task_1/internal/application/completion"
+	"aichallenge/week_1/task_1/internal/application/subagent"
 	"aichallenge/week_1/task_1/internal/domain/model"
 )
 
@@ -53,7 +54,7 @@ func (t *Titles) Start(ctx context.Context, sid, pid, cid, input string) {
 		defer t.wg.Done()
 		defer cancel()
 		started := time.Now()
-		raw, err := t.client.Complete(call, "title", []completion.Message{{Role: "system", Content: t.prompt}, {Role: "user", Content: input}})
+		raw, err := subagent.Run(call, t.client, "title", []completion.Message{{Role: "system", Content: t.prompt}, {Role: "user", Content: input}}, subagent.Text)
 		title, valid := model.ValidTitle(raw)
 		status := "success"
 		if err != nil || !valid {

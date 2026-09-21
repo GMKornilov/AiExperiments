@@ -23,6 +23,12 @@ memory:
   model: "memory-extractor"
   request_timeout: 10s
   system_prompt_path: "memory-system.txt"
+invariant_validation:
+  base_url: "http://127.0.0.1:18081"
+  api_key: "e2e-dummy-credential"
+  model: "e2e-invariant-model"
+  request_timeout: 10s
+  system_prompt_path: "barista-system.txt"
 summary:
   base_url: "http://127.0.0.1:18081"
   api_key: "e2e-dummy-credential"

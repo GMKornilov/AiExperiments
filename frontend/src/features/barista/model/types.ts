@@ -2,7 +2,7 @@ export type MessageRole = "user" | "assistant";
 export type MessageStatus = "pending" | "success" | "error";
 export type MemoryStatus = "idle" | "updating" | "success" | "error";
 export type TitleStatus = "idle" | "pending" | "success" | "fallback";
-export type ErrorCategory = "config" | "validation" | "network" | "timeout" | "provider" | "invalid_response" | "not_found" | "busy" | "cancelled" | "storage" | "memory" | "context_limit";
+export type ErrorCategory = "config" | "validation" | "network" | "timeout" | "provider" | "invalid_response" | "not_found" | "busy" | "cancelled" | "storage" | "memory" | "context_limit" | "invariant_validation";
 
 export type BaristaMessage = { id: string; client_message_id?: string; role: MessageRole; text: string; status: MessageStatus; created_at: string; error_category?: ErrorCategory; localOnly?: boolean; paused?: boolean };
 export type TaskStage = "clarify_input" | "research_input_data" | "execution" | "user_feedback";
@@ -16,6 +16,8 @@ export type Chat = { id: string; project_id: string; title: string; title_status
 export type Project = { id: string; title: string; created_at: string; updated_at: string; chats: Chat[]; selected_chat_id?: string | null };
 export type ProjectList = { projects: Project[]; selected_project_id?: string | null; selected_chat_id?: string | null };
 export type Memory = { global_facts: string[]; project_facts: string[]; status: MemoryStatus; error_category?: ErrorCategory };
+export type Invariant = { id: string; name: string; description: string };
+export type InvariantList = { invariants: Invariant[] };
 export type APIError = { category: ErrorCategory; message: string };
 export type Profile = { id: string; name: string; style: string; constraints: string; additional_context: string; built_in: boolean };
 export type ProfileList = { profiles: Profile[]; active_profile_id: string };

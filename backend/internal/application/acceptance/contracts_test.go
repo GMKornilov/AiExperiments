@@ -17,6 +17,7 @@ import (
 	"aichallenge/week_1/task_1/internal/adapters/statejson"
 	"aichallenge/week_1/task_1/internal/application/completion"
 	"aichallenge/week_1/task_1/internal/application/conversation"
+	"aichallenge/week_1/task_1/internal/application/invariant"
 	"aichallenge/week_1/task_1/internal/application/state"
 	"aichallenge/week_1/task_1/internal/application/taskflow"
 	"aichallenge/week_1/task_1/internal/application/workspace"
@@ -200,8 +201,9 @@ func setup(t *testing.T, kind string) *fixture {
 	extractor := extractjson.NewExtractor(f.provider, "MEMORY")
 	settings := conversation.Settings{Prompt: "BASE", Window: 3}
 	f.ws = workspace.New(f.state, f.state, id, time.Now)
-	f.chat = conversation.New(f.state, f.provider, extractor, f.titles, settings, id, time.Now)
-	f.tasks = taskflow.New(f.state, f.provider, extractor, extractjson.ProposalDecoder{}, model.TaskRouter{}, f.titles, settings, id, time.Now)
+	allow := invariant.Set{}
+	f.chat = conversation.New(f.state, f.provider, extractor, f.titles, settings, id, time.Now, allow)
+	f.tasks = taskflow.New(f.state, f.provider, extractor, extractjson.ProposalDecoder{}, model.TaskRouter{}, f.titles, settings, id, time.Now, allow)
 	p, err := f.ws.CreateProject("s", "Project")
 	if err != nil {
 		t.Fatal(err)
@@ -423,15 +425,14 @@ func TestRepositoryContracts(t *testing.T) {
 					t.Fatal("resurrection")
 				}
 			})
-			t.Run("title-independent-first-accept", func(t *testing.T) {
+			t.Run("title-after-accepted-commit", func(t *testing.T) {
 				f := setup(t, kind)
 				f.provider.set("", "chat", "chat")
 				result := make(chan error, 1)
 				go func() { _, e := f.chat.Send(context.Background(), "s", f.pid, f.cid, "normal", "beans"); result <- e }()
 				await(t, f.provider.entered)
-				settleTitles(t, f)
-				if f.provider.count("title") != 1 || f.stored().TitleStatus != "success" {
-					t.Fatal("title waited for main")
+				if f.provider.count("title") != 0 || f.stored().TitleStatus != "idle" {
+					t.Fatal("title started before accepted commit")
 				}
 				close(f.provider.release)
 				if <-result == nil {
@@ -442,8 +443,9 @@ func TestRepositoryContracts(t *testing.T) {
 				if _, e := f.chat.Retry(context.Background(), "s", f.pid, f.cid, c.Messages[0].ID); e != nil {
 					t.Fatal(e)
 				}
+				settleTitles(t, f)
 				if f.provider.count("title") != 1 {
-					t.Fatal("title rerun")
+					t.Fatal("title was not generated after accepted retry")
 				}
 			})
 		})
@@ -737,15 +739,15 @@ func TestAutonomousAgentStepLimitRollsBack(t *testing.T) {
 	beforeTaskCalls := f.provider.count("task_step")
 	beforeMemoryCalls := f.provider.count("memory_extractor")
 	f.provider.set(proposalValues("research_input_data", "Бесконечный шаг", "agent: продолжать"), "", "")
-	_, err = f.input("цель подтверждаю", "endless", tid)
-	if completion.Category(err) != "invalid_response" {
-		t.Fatalf("unexpected limit error: %v", err)
+	limited, err := f.input("цель подтверждаю", "endless", tid)
+	if err != nil {
+		t.Fatalf("limit refusal failed: %v", err)
 	}
-	if f.provider.count("task_step")-beforeTaskCalls != maxAutonomousTaskCallsForTest || f.provider.count("memory_extractor") != beforeMemoryCalls {
+	if f.provider.count("task_step")-beforeTaskCalls != maxAutonomousTaskCallsForTest || f.provider.count("memory_extractor") != beforeMemoryCalls+1 {
 		t.Fatalf("limit did not stop calls: task=%d memory=%d", f.provider.count("task_step")-beforeTaskCalls, f.provider.count("memory_extractor")-beforeMemoryCalls)
 	}
 	after := f.stored()
-	if len(after.Messages) != len(before.Messages) || after.Tasks[0].Stage != before.Tasks[0].Stage || !reflect.DeepEqual(after.Tasks[0].Plan, before.Tasks[0].Plan) {
+	if len(after.Messages) != len(before.Messages)+2 || !strings.Contains(limited.Messages[len(limited.Messages)-1].Text, "не смог безопасно") || after.Tasks[0].Stage != before.Tasks[0].Stage || !reflect.DeepEqual(after.Tasks[0].Plan, before.Tasks[0].Plan) {
 		t.Fatal("autonomous limit published partial state")
 	}
 }

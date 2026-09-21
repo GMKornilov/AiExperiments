@@ -79,6 +79,28 @@ describe("BaristaWorkspace", () => {
     await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => url === "/api/projects/p1/memory/global" && init?.method === "DELETE")).toBe(true));
   });
 
+  it("загружает read-only панель инвариантов и повторяет только её ошибку", async () => {
+    const invariants = { invariants: [
+      { id: "equipment-availability", name: "Доступность оборудования", description: "Не используем сломанное оборудование." },
+      { id: "beans-availability", name: "Доступность зёрен", description: "Не предлагаем закончившиеся зёрна." },
+      { id: "inventory-truth", name: "Достоверность инвентаря", description: "Не выдумываем инвентарь." },
+    ] };
+    let invariantCalls = 0;
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === "/api/invariants") { invariantCalls += 1; return invariantCalls === 1 ? json({ error: { category: "network", message: "private" } }, 502) : json(invariants); }
+      if (url.endsWith("/memory")) return json(memory);
+      return json(listing());
+    });
+    vi.stubGlobal("fetch", fetchMock); render(<BaristaWorkspace />);
+    fireEvent.click(await screen.findByRole("button", { name: "Инварианты" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Не удалось загрузить инварианты.");
+    expect(screen.getByLabelText("Ваш вопрос")).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Повторить" }));
+    expect(await screen.findByText("Доступность оборудования")).toBeVisible();
+    expect(screen.getByText("Достоверность инвентаря")).toBeVisible();
+    expect(invariantCalls).toBe(2);
+  });
+
   it("сразу показывает pending-ввод и не отображает ответ агента до завершения запроса", async () => {
     let resolve!: (response: Response) => void;
     const response = { ...chat("c1", [{ id: "u1", role: "user", text: "Что приготовить?", status: "success", created_at: "2026-01-01T00:00:00Z" }, { id: "a1", role: "assistant", text: "Сделайте V60", status: "success", created_at: "2026-01-01T00:00:01Z" }]), memory_status: "success" };
@@ -115,6 +137,23 @@ describe("BaristaWorkspace", () => {
     expect(screen.getAllByText("Что приготовить?")).toHaveLength(1);
   });
 
+  it("показывает safe invariant_validation и повторяет тот же local input ID", async () => {
+    const response = { ...chat("c1", [{ id: "u1", role: "user", text: "Что приготовить?", status: "success", created_at: "2026-01-01T00:00:00Z" }]) };
+    let calls = 0;
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (url.endsWith("/tasks/input") && init?.method === "POST") { calls += 1; return calls === 1 ? json({ error: { category: "invariant_validation", message: "private provider reason" } }, 502) : json({ chat: response }); }
+      if (url === "/api/projects/p1/memory") return json(memory);
+      return json(listing());
+    });
+    vi.stubGlobal("fetch", fetchMock); render(<BaristaWorkspace />);
+    fireEvent.change(await screen.findByLabelText("Ваш вопрос"), { target: { value: "Что приготовить?" } }); fireEvent.click(screen.getByRole("button", { name: "Отправить" }));
+    expect(await screen.findByText("Не удалось проверить инварианты. Повторите тот же запрос.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Повторить" }));
+    await waitFor(() => expect(calls).toBe(2));
+    const inputs = fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/tasks/input"));
+    expect(JSON.parse(inputs[1][1].body).client_message_id).toBe(JSON.parse(inputs[0][1].body).client_message_id);
+  });
+
   it("показывает кандидатов задачи и передаёт явный выбор", async () => {
     const candidate = { id: "t1", title: "Рецепт эспрессо", description: "Подобрать рецепт" };
     const saved = { ...chat(), tasks: [{ ...candidate, stage: "execution", current_step: "Проверить помол", expected_action: "Оценить вкус", status: "active", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:01:00Z" }] };
@@ -142,8 +181,15 @@ describe("BaristaWorkspace", () => {
     vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => url.endsWith("/memory") ? json(memory) : json(listing([project([chat("c1", [], [task])])]))));
     render(<BaristaWorkspace />);
     const toggle = await screen.findByRole("button", { name: /Задачи.*1 в работе/ });
+    const header = screen.getByRole("heading", { name: "Чат c1" }).closest("header");
+    expect(header).not.toBeNull();
+    expect(within(header!).getByRole("button", { name: /Задачи.*1 в работе/ })).toBe(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByText("Проверить помол")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Состояние задач" })).not.toBeInTheDocument();
     fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("region", { name: "Состояние задач" })).toBeVisible();
     expect(screen.getByText("Проверить помол")).toBeVisible();
     expect(screen.getByRole("list", { name: "План задачи «Рецепт»" })).toBeVisible();
     expect(screen.getByText("Узнать информацию о кофемолке").closest("li")).toHaveTextContent("Готово");

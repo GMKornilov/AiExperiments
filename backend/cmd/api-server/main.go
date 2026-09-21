@@ -20,6 +20,7 @@ import (
 	"aichallenge/week_1/task_1/internal/adapters/statejson"
 	"aichallenge/week_1/task_1/internal/agent"
 	"aichallenge/week_1/task_1/internal/application/conversation"
+	"aichallenge/week_1/task_1/internal/application/invariant"
 	"aichallenge/week_1/task_1/internal/application/state"
 	"aichallenge/week_1/task_1/internal/application/taskflow"
 	"aichallenge/week_1/task_1/internal/application/workspace"
@@ -56,6 +57,10 @@ func main() {
 		logger.Error("barista.server", "error_category", "config", "correlation_id", requestID)
 		os.Exit(1)
 	}
+	if snapshot.InvariantValidation == nil {
+		logger.Error("barista.server", "error_category", "config", "correlation_id", requestID)
+		os.Exit(1)
+	}
 	client, err := openai.New(agent.OpenAIProvider{}, snapshot)
 	if err != nil {
 		logger.Error("barista.server", "error_category", "config", "correlation_id", requestID)
@@ -69,15 +74,16 @@ func main() {
 	store := state.New(initial, disk)
 	id := func() string { return llm.RequestID(llm.WithRequestID(context.Background(), "")) }
 	settings := conversation.Settings{Prompt: snapshot.Chat.SystemPrompt, TitlePrompt: snapshot.Text.SystemPrompt, Window: snapshot.ContextWindowMessages}
+	invariants := invariant.NewSet(client)
 	titles := conversation.NewTitles(store, client, settings.TitlePrompt, time.Now)
 	extractor := extractjson.NewExtractor(client, snapshot.Memory.Snapshot.SystemPrompt)
 	workspaceService := workspace.New(store, store, id, time.Now)
-	conversationService := conversation.New(store, client, extractor, titles, settings, id, time.Now)
-	tasks := taskflow.New(store, client, extractor, extractjson.ProposalDecoder{}, model.TaskRouter{}, titles, settings, id, time.Now)
+	conversationService := conversation.New(store, client, extractor, titles, settings, id, time.Now, invariants)
+	tasks := taskflow.New(store, client, extractor, extractjson.ProposalDecoder{}, model.TaskRouter{}, titles, settings, id, time.Now, invariants)
 	closeStore := func() { store.Close(); titles.Close() }
 	defer closeStore()
 	journal := observability.NewJournal(cfg.LogTextPayloads, logger)
-	server := &http.Server{Addr: cfg.Addr, Handler: httpapi.NewMemory(httpapi.UseCases{Projects: workspaceService, Chats: workspaceService, Profiles: workspaceService, Memory: workspaceService, Conversations: conversationService, Tasks: tasks, Health: store}, journal)}
+	server := &http.Server{Addr: cfg.Addr, Handler: httpapi.NewMemory(httpapi.UseCases{Projects: workspaceService, Chats: workspaceService, Profiles: workspaceService, Memory: workspaceService, Conversations: conversationService, Tasks: tasks, Health: store, Invariants: invariants.Public()}, journal)}
 	if err := serve(server, closeStore); err != nil {
 		logger.Error("barista.server", "source", "backend", "event", "server", "result", "failure", "correlation_id", requestID, "error_category", "network")
 		os.Exit(1)
