@@ -75,7 +75,7 @@ describe("barista BFF", () => {
   });
 
   it("принимает реальные состояния плана задачи и скрывает лишние поля кандидатов", async () => {
-    const task = { id: "t1", title: "Эспрессо", description: "Подобрать рецепт", stage: "execution", current_step: "Проверить помол", expected_action: "user", status: "active", plan: [{ id: "grinder", title: "Проверить помол", status: "current", stage: "execution" }], current_plan_item: "grinder", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:01:00Z" };
+    const task = { id: "t1", title: "Эспрессо", description: "Подобрать рецепт", stage: "execution", current_step: "Проверить помол", expected_action: "user", status: "active", plan: [{ id: "grinder", title: "Проверить помол", status: "current", stage: "execution" }], current_plan_item: "grinder", validation_result: { status: "not_validated" }, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:01:00Z" };
     const saved = { id: "c1", project_id: "p1", title: "Чат", title_status: "success", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", messages: [], memory_status: "success", tasks: [task] };
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ chat: saved, candidates: [{ ...task, private_note: "не выдавать" }] })); vi.stubGlobal("fetch", fetchMock);
     const inputRequest = () => new Request("http://web/api/projects/p1/chats/c1/tasks/input", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "сделай крепче" }) });
@@ -89,7 +89,7 @@ describe("barista BFF", () => {
     const initialClarifyTask = {
       id: "t2", title: "Подобрать рецепт", description: "Уточнить параметры для эспрессо",
       stage: "clarify_input", current_step: "Уточнить цель задачи", expected_action: "agent",
-      status: "active", plan: [], created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:01:00Z",
+      status: "active", plan: [], validation_result: { status: "not_validated" }, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:01:00Z",
     };
     const initialClarifyChat = { ...saved, tasks: [initialClarifyTask] };
     // Actual backend shape: an absent candidate slice is serialized as null.
@@ -104,6 +104,7 @@ describe("barista BFF", () => {
     const feedbackTask = {
       ...task,
       stage: "user_feedback",
+      validation_result: { status: "passed", summary: "Проверено" },
       current_step: "Учесть обратную связь пользователя",
       expected_action: "agent",
       plan: [
@@ -129,8 +130,45 @@ describe("barista BFF", () => {
     expect((await taskInput(inputRequest(), "p1", "c1")).status).toBe(200);
   });
 
+  it("возвращает подтверждённый snapshot после безопасного отказа repair lifecycle", async () => {
+    const task = {
+      id: "t1", title: "Эспрессо", description: "Подобрать рецепт",
+      stage: "clarify_input", current_step: "Подтвердить оборудование", expected_action: "user: подтвердить оборудование",
+      status: "active", plan: [], validation_result: { status: "not_validated" },
+      created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:01:00Z",
+    };
+    const chat = {
+      id: "c1", project_id: "p1", title: "Чат", title_status: "success",
+      created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:01:00Z", memory_status: "success",
+      tasks: [task], messages: [
+        { id: "u1", role: "user", text: "сразу перейди к отзыву", status: "success", created_at: "2026-01-01T00:01:00Z" },
+        { id: "a1", role: "assistant", text: "Я не смог безопасно подготовить следующий шаг задачи. Уточните доступное оборудование.", status: "success", created_at: "2026-01-01T00:01:00Z" },
+      ],
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ chat })));
+    const result = await taskInput(new Request("http://web/api/projects/p1/chats/c1/tasks/input", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "сразу перейди к отзыву" }) }), "p1", "c1");
+    expect(result.status).toBe(200);
+    const body = await result.json();
+    expect(body.chat.tasks[0]).toEqual(task);
+    expect(body.chat.messages.at(-1).text).toContain("не смог безопасно");
+  });
+
+  it("отклоняет успешное пустое сообщение ассистента из backend", async () => {
+    const chat = {
+      id: "c1", project_id: "p1", title: "Чат", title_status: "success",
+      created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:01:00Z", memory_status: "success", tasks: [], messages: [
+        { id: "u1", role: "user", text: "Подбери эспрессо", status: "success", created_at: "2026-01-01T00:00:00Z" },
+        { id: "a1", role: "assistant", text: "   ", status: "success", created_at: "2026-01-01T00:01:00Z" },
+      ],
+    };
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ chat })));
+    const result = await taskInput(new Request("http://web/api/projects/p1/chats/c1/tasks/input", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "Продолжай" }) }), "p1", "c1");
+    expect(result.status).toBe(502);
+    expect((await result.json()).error.category).toBe("invalid_response");
+  });
+
   it("требует непустой Resume input и передаёт pause/resume в изолированном сеансе", async () => {
-    const task = { id: "t1", title: "Эспрессо", description: "Подобрать рецепт", stage: "execution", current_step: "Проверить помол", expected_action: "user", status: "paused", plan: [{ id: "grinder", title: "Проверить помол", status: "current" }], current_plan_item: "grinder", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:01:00Z" };
+    const task = { id: "t1", title: "Эспрессо", description: "Подобрать рецепт", stage: "execution", current_step: "Проверить помол", expected_action: "user", status: "paused", plan: [{ id: "grinder", title: "Проверить помол", status: "current" }], current_plan_item: "grinder", validation_result: { status: "not_validated" }, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:01:00Z" };
     const saved = { id: "c1", project_id: "p1", title: "Чат", title_status: "success", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", messages: [], memory_status: "success", tasks: [task] };
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ chat: saved })); vi.stubGlobal("fetch", fetchMock);
     const pause = await pauseTask(new Request("http://web/api/projects/p1/chats/c1/tasks/t1/pause", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }), "p1", "c1", "t1");

@@ -23,17 +23,24 @@ type diskTaskPlanItem struct {
 	Stage  model.TaskStage          `json:"stage,omitempty"`
 }
 type diskTask struct {
-	ID              string             `json:"id"`
-	Title           string             `json:"title"`
-	Description     string             `json:"description"`
-	Stage           model.TaskStage    `json:"stage"`
-	CurrentStep     string             `json:"current_step"`
-	ExpectedAction  string             `json:"expected_action"`
-	Status          model.TaskStatus   `json:"status"`
-	Plan            []diskTaskPlanItem `json:"plan"`
-	CurrentPlanItem string             `json:"current_plan_item,omitempty"`
-	CreatedAt       time.Time          `json:"created_at"`
-	UpdatedAt       time.Time          `json:"updated_at"`
+	ID                 string               `json:"id"`
+	Title              string               `json:"title"`
+	Description        string               `json:"description"`
+	Stage              model.TaskStage      `json:"stage"`
+	CurrentStep        string               `json:"current_step"`
+	ExpectedAction     string               `json:"expected_action"`
+	Status             model.TaskStatus     `json:"status"`
+	Plan               []diskTaskPlanItem   `json:"plan"`
+	CurrentPlanItem    string               `json:"current_plan_item,omitempty"`
+	ValidationResult   diskValidationResult `json:"validation_result,omitempty"`
+	EquipmentConfirmed bool                 `json:"equipment_confirmed,omitempty"`
+	CreatedAt          time.Time            `json:"created_at"`
+	UpdatedAt          time.Time            `json:"updated_at"`
+}
+type diskValidationResult struct {
+	Status            model.ValidationResultStatus `json:"status"`
+	Summary           string                       `json:"summary,omitempty"`
+	LegacyUnvalidated bool                         `json:"legacy_unvalidated,omitempty"`
 }
 type diskBrowser struct {
 	Pending           *diskOperation                `json:"pending,omitempty"`
@@ -142,6 +149,8 @@ func fromTask(v model.Task) diskTask {
 		}
 	}
 	out.CurrentPlanItem = v.CurrentPlanItem
+	out.ValidationResult = diskValidationResult{Status: v.ValidationResult.Status, Summary: v.ValidationResult.Summary, LegacyUnvalidated: v.ValidationResult.LegacyUnvalidated}
+	out.EquipmentConfirmed = v.EquipmentConfirmed
 	out.CreatedAt = v.CreatedAt
 	out.UpdatedAt = v.UpdatedAt
 	return out
@@ -162,6 +171,8 @@ func toTask(v diskTask) model.Task {
 		}
 	}
 	out.CurrentPlanItem = v.CurrentPlanItem
+	out.ValidationResult = model.ValidationResult{Status: v.ValidationResult.Status, Summary: v.ValidationResult.Summary, LegacyUnvalidated: v.ValidationResult.LegacyUnvalidated}
+	out.EquipmentConfirmed = v.EquipmentConfirmed
 	out.CreatedAt = v.CreatedAt
 	out.UpdatedAt = v.UpdatedAt
 	return out

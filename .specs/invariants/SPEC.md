@@ -32,8 +32,8 @@ repair/refusal lifecycle, read-only панели, конфигурации valid
 
 Отсутствие fact не доказывает недоступность ресурса: оно означает «неизвестно».
 Неизвестное устройство или зёрна можно упомянуть только как явное условие.
-Task transition guard — тоже инвариант исполнения, но он внутренний и не
-показывается в пользовательской панели.
+Task transition и final-validation guard — тоже инварианты исполнения, но они
+внутренние и не показываются в пользовательской панели.
 
 Не входят: редактирование или создание правил пользователем, история
 проверок в UI, batching semantic checks, типизированный inventory, проверка
@@ -97,10 +97,10 @@ fail-closed error, а не повод молча удалить значимую
 
 Три публичных кофейных правила реализуются отдельными LLM-backed
 `Invariant`-ами. Их естественно-языковая семантика и свободные facts не дают
-надёжно детерминировать совпадение названий ресурсов. Task transition guard
-реализуется отдельным deterministic invariant: он сравнивает target proposal
-только с актуальным подтверждённым server snapshot, а не с состоянием,
-присланным клиентом.
+надёжно детерминировать совпадение названий ресурсов. Task transition и
+final-validation guard реализуются deterministic invariant-ами: они сравнивают
+target proposal только с актуальным подтверждённым server snapshot, а не с
+состоянием, присланным клиентом.
 
 ### Обычный chat
 
@@ -142,10 +142,20 @@ user/refusal pair, а при pre error не принимается никако�
 
 Для каждого task candidate pipeline имеет порядок: строгий proposal decode →
 deterministic transition invariant от актуального подтверждённого server
-snapshot → три sequential semantic checks. Все применимые violations, включая
-неразрешённый transition, передаются в один repair. Даже при violation/error
-transition все semantic checks выполняются; error имеет приоритет над
-violations.
+snapshot → три sequential semantic checks → final-validation decision, если
+цель proposal — `execution → user_feedback`. Transition guard разрешает только
+граф и status-переходы, определённые
+`task-state-machine`; равный stage трактуется как отсутствие transition. Выход
+из `clarify_input` доказывается явным подтверждением используемого оборудования
+в принятом user input, а не флагом proposal. Для `execution → user_feedback`
+final-validation guard требует completed plan и успех всех обязательных
+semantic checks; только тогда server детерминированно формирует публичный
+`validation_result` и безопасный summary. Это не поле task proposal: неизвестное
+поле `validation_result` отклоняется строгим decoder-ом. Этот gate не создаёт
+самостоятельный provider-вызов. Все применимые violations,
+включая неразрешённый transition или неуспех gate, передаются в один repair.
+Даже при violation/error transition все semantic checks выполняются; error
+имеет приоритет над violations.
 
 На один task step допускаются исходный candidate и максимум два repair
 candidates. На всю пользовательскую task-chain допускается не более восьми
@@ -153,7 +163,7 @@ task candidate/repair provider-вызовов: repair расходует это�
 Pre/post checks, один final extractor и independent title в этот бюджет не
 входят. После каждого разрешённого task candidate следующий автономный шаг
 возможен только когда proposal прошёл все проверки; промежуточные output,
-proposal и plan не публикуются.
+proposal, plan и validation result не публикуются.
 
 После конечного разрешённого task candidate один extractor обрабатывает
 совокупный output. Затем user/assistant pair, facts, task state и plan
@@ -335,11 +345,14 @@ acceptance gate не пройден, а не заменяется зелёным
   все три rejected candidates отсутствуют из history и facts input extractor-а.
   Проверка: controlled provider + persistence integration.
 - **AC-INV-07.** Каждый task proposal декодируется, сравнивается с актуальным
-  подтверждённым task snapshot детерминированным invariant-ом и затем проходит
-  все три semantic checks. Target transition из client request не является
-  источником истины. Некорректный transition включается в один repair и не
-  меняет plan/state до atomic commit. Проверка: state-machine integration +
-  controlled provider.
+  подтверждённым task snapshot deterministic transition/final-validation
+  guard-ом и затем проходит все три semantic checks. Target transition,
+  подтверждение оборудования и client request не являются источником истины.
+  `validation_result` не входит в proposal: неизвестное поле отклоняется, а
+  после gate его детерминированно создаёт server. Некорректный transition, jump,
+  неуспех gate или ложное подтверждение включаются в один repair и не меняют
+  plan/state до atomic commit. Gate не создаёт дополнительный provider-вызов.
+  Проверка: state-machine integration + controlled provider + storage spy.
 - **AC-INV-08.** На одну task user attempt расходуется не более восьми task
   candidate/repair calls и не более трёх candidates на один task step. При
   исчерпании сохраняется user/template-refusal pair после одного extractor-а;

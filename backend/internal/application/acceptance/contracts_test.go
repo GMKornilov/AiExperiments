@@ -133,8 +133,8 @@ func (p *provider) count(purpose string) int {
 func proposal(stage string) string {
 	plan := []map[string]string{}
 	current := ""
-	expected := "user: Какова модель кофемолки?"
-	questions := []string{"Какова модель кофемолки?"}
+	expected := "user: подтвердите используемое оборудование: кофемолку"
+	questions := []string{"Подтвердите используемое оборудование: какая кофемолка будет использована?"}
 	if stage != "clarify_input" {
 		plan = []map[string]string{{"id": "grinder", "title": "Узнать информацию о кофемолке", "status": "current"}, {"id": "recipe", "title": "Подобрать рецепт", "status": "pending"}}
 		current = "grinder"
@@ -321,6 +321,9 @@ func TestRepositoryContracts(t *testing.T) {
 						t.Fatal(e)
 					}
 				}
+				if c.Tasks[0].ValidationResult.Status != model.ValidationPassed || c.Tasks[0].ValidationResult.Summary == "" {
+					t.Fatalf("feedback persisted without server validation evidence: %+v", c.Tasks[0].ValidationResult)
+				}
 				done := strings.ReplaceAll(proposal("user_feedback"), `"status":"active"`, `"status":"done"`)
 				done = strings.ReplaceAll(done, `"positive_feedback":false`, `"positive_feedback":true`)
 				done = strings.ReplaceAll(done, `"expected_action":"user: Оцените рецепт"`, `"expected_action":"none"`)
@@ -331,6 +334,29 @@ func TestRepositoryContracts(t *testing.T) {
 				}
 				if _, e = f.tasks.PauseTask("s", f.pid, f.cid, tid); !errors.Is(e, model.ErrValidation) {
 					t.Fatal("paused done task")
+				}
+			})
+			t.Run("task-output-is-persisted-and-sent-to-memory", func(t *testing.T) {
+				f := setup(t, kind)
+				const output = "Подтвердите кофемолку и способ приготовления."
+				f.provider.set(proposalValues("clarify_input", output, "user: подтвердите используемое оборудование: кофемолку"), "", "")
+
+				chat, err := f.input("Подбери эспрессо", "output", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(chat.Messages) != 2 || chat.Messages[1].Role != "assistant" || chat.Messages[1].Text != output {
+					t.Fatalf("unconfirmed assistant output: %+v", chat.Messages)
+				}
+				stored := f.stored()
+				if len(stored.Messages) != 2 || stored.Messages[1].Text != output {
+					t.Fatalf("persisted assistant output: %+v", stored.Messages)
+				}
+				f.provider.mu.Lock()
+				memoryMessages := append([]completion.Message{}, f.provider.messages["memory_extractor"]...)
+				f.provider.mu.Unlock()
+				if len(memoryMessages) != 2 || !strings.Contains(memoryMessages[1].Content, `"role":"assistant","text":"`+output+`"`) {
+					t.Fatalf("memory input lost confirmed assistant output: %+v", memoryMessages)
 				}
 			})
 			for _, block := range []string{"task_step", "memory_extractor"} {
@@ -378,7 +404,7 @@ func TestRepositoryContracts(t *testing.T) {
 				}
 				tid := c.Tasks[0].ID
 				f.provider.set(proposal("research_input_data"), "", "")
-				_, e = f.input("данные", "two", tid)
+				_, e = f.input("кофемолка Niche", "two", tid)
 				if e != nil {
 					t.Fatal(e)
 				}
@@ -669,25 +695,29 @@ func TestPauseResumeAcceptsAutonomousForwardStage(t *testing.T) {
 	if err = <-result; err != nil {
 		t.Fatal(err)
 	}
-	f.provider.setSequence(`{}`)
+	// Некорректные proposal проходят bounded repair lifecycle и завершаются
+	// безопасным отказом, а не provider-ошибкой. Три ответа исключают fallback
+	// test-provider к прежнему валидному raw.
+	f.provider.setSequence(`{}`, `{}`, `{}`)
 	_, _, err = f.tasks.Resume(context.Background(), "s", f.pid, f.cid, tid, "", "")
-	if completion.Category(err) != "invalid_response" || f.stored().Tasks[0].Status != model.TaskStatusPaused {
-		t.Fatalf("failed resume was not kept paused: %v %+v", err, f.stored().Tasks[0])
+	if err != nil || f.stored().Tasks[0].Status != model.TaskStatusPaused {
+		t.Fatalf("safe resume refusal was not kept paused: %v %+v", err, f.stored().Tasks[0])
 	}
 	beforeTaskCalls := f.provider.count("task_step")
 	beforeMemoryCalls := f.provider.count("memory_extractor")
 	f.provider.setSequence(
 		proposalValues("research_input_data", "Данные собраны", "agent: подготовить результат"),
+		proposalValues("execution", "Результат подготовлен", "agent: завершить результат"),
 		proposalValues("user_feedback", "Результат подготовлен", "user: оценить результат"),
 	)
 	chat, _, err = f.tasks.Resume(context.Background(), "s", f.pid, f.cid, tid, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if f.provider.count("task_step")-beforeTaskCalls != 2 || f.provider.count("memory_extractor")-beforeMemoryCalls != 1 {
+	if f.provider.count("task_step")-beforeTaskCalls != 3 || f.provider.count("memory_extractor")-beforeMemoryCalls != 1 {
 		t.Fatalf("unexpected resume calls: task=%d memory=%d", f.provider.count("task_step")-beforeTaskCalls, f.provider.count("memory_extractor")-beforeMemoryCalls)
 	}
-	if chat.Tasks[0].Stage != model.TaskStageUserFeedback || chat.Tasks[0].Status != model.TaskStatusActive || len(chat.Messages) != 4 || chat.Messages[3].Text != "Данные собраны\n\nРезультат подготовлен" {
+	if chat.Tasks[0].Stage != model.TaskStageUserFeedback || chat.Tasks[0].Status != model.TaskStatusActive || len(chat.Messages) != 6 || chat.Messages[len(chat.Messages)-1].Text != "Данные собраны\n\nРезультат подготовлен\n\nРезультат подготовлен" {
 		t.Fatalf("unexpected resume result: %+v", chat)
 	}
 }
@@ -739,7 +769,7 @@ func TestAutonomousAgentStepLimitRollsBack(t *testing.T) {
 	beforeTaskCalls := f.provider.count("task_step")
 	beforeMemoryCalls := f.provider.count("memory_extractor")
 	f.provider.set(proposalValues("research_input_data", "Бесконечный шаг", "agent: продолжать"), "", "")
-	limited, err := f.input("цель подтверждаю", "endless", tid)
+	limited, err := f.input("кофемолка Niche, цель подтверждаю", "endless", tid)
 	if err != nil {
 		t.Fatalf("limit refusal failed: %v", err)
 	}

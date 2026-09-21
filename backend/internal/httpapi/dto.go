@@ -35,17 +35,23 @@ type viewTaskPlanItem struct {
 	Stage  model.TaskStage          `json:"stage,omitempty"`
 }
 type viewTask struct {
-	ID              string             `json:"id"`
-	Title           string             `json:"title"`
-	Description     string             `json:"description"`
-	Stage           model.TaskStage    `json:"stage"`
-	CurrentStep     string             `json:"current_step"`
-	ExpectedAction  string             `json:"expected_action"`
-	Status          model.TaskStatus   `json:"status"`
-	Plan            []viewTaskPlanItem `json:"plan"`
-	CurrentPlanItem string             `json:"current_plan_item,omitempty"`
-	CreatedAt       time.Time          `json:"created_at"`
-	UpdatedAt       time.Time          `json:"updated_at"`
+	ID               string               `json:"id"`
+	Title            string               `json:"title"`
+	Description      string               `json:"description"`
+	Stage            model.TaskStage      `json:"stage"`
+	CurrentStep      string               `json:"current_step"`
+	ExpectedAction   string               `json:"expected_action"`
+	Status           model.TaskStatus     `json:"status"`
+	Plan             []viewTaskPlanItem   `json:"plan"`
+	CurrentPlanItem  string               `json:"current_plan_item,omitempty"`
+	ValidationResult viewValidationResult `json:"validation_result"`
+	CreatedAt        time.Time            `json:"created_at"`
+	UpdatedAt        time.Time            `json:"updated_at"`
+}
+type viewValidationResult struct {
+	Status            model.ValidationResultStatus `json:"status"`
+	Summary           string                       `json:"summary,omitempty"`
+	LegacyUnvalidated bool                         `json:"legacy_unvalidated,omitempty"`
 }
 type viewProject struct {
 	ID        string     `json:"id"`
@@ -137,6 +143,7 @@ func fromTask(v model.Task) viewTask {
 		}
 	}
 	out.CurrentPlanItem = v.CurrentPlanItem
+	out.ValidationResult = viewValidationResult{Status: v.ValidationResult.Status, Summary: v.ValidationResult.Summary, LegacyUnvalidated: v.ValidationResult.LegacyUnvalidated}
 	out.CreatedAt = v.CreatedAt
 	out.UpdatedAt = v.UpdatedAt
 	return out

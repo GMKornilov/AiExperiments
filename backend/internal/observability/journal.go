@@ -57,11 +57,13 @@ func (j *Journal) Log(record Record, credential string) {
 		record.Text = ""
 		record.Payload = ""
 	} else {
-		for _, secret := range append(j.secrets[record.DialogID], credential) {
-			if secret != "" {
-				record.Text = strings.ReplaceAll(record.Text, secret, "[REDACTED]")
-				record.Payload = redactPayload(record.Payload, secret)
-			}
+		for _, secret := range j.secrets[record.DialogID] {
+			record.Text = strings.ReplaceAll(record.Text, secret, "[REDACTED]")
+			record.Payload = redactPayload(record.Payload, secret)
+		}
+		if credential != "" {
+			record.Text = strings.ReplaceAll(record.Text, credential, "[REDACTED]")
+			record.Payload = redactPayload(record.Payload, credential)
 		}
 	}
 	deleted := record.DialogID != "" && j.deleted[record.DialogID]

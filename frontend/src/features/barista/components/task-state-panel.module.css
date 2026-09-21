@@ -8,7 +8,7 @@
 .heading h3 { min-width:0; overflow-wrap:anywhere; font-size:.9rem; }
 .status { flex:none; border-radius:99px; padding:.18rem .42rem; font-size:.68rem; }
 .active { color:#35220a; background:#e8a65d; }.paused { color:#f8e2c7; background:#735633; }.done { color:#122617; background:#9fc49b; }
-.stage,.planEmpty > p,.feedbackHint,.doneHint { margin:.5rem 0 0; color:var(--color-muted); font-size:.78rem; }
+.stage,.planEmpty > p,.feedbackHint,.doneHint,.legacyHint,.validationPassed { margin:.5rem 0 0; color:var(--color-muted); font-size:.78rem; overflow-wrap:anywhere; }.validationPassed { color:#9fc49b; }.legacyHint { color:#e8a65d; }
 .planEmpty { margin:.65rem 0 0; padding:.5rem; border:1px dashed var(--color-line); border-radius:8px; }.planEmpty > p { margin-top:0; }
 .plan { display:grid; gap:.3rem; margin:.7rem 0 0; padding:0; list-style:none; }
 .planStep { position:relative; min-width:0; padding:.42rem .5rem .42rem .85rem; border-left:2px solid var(--color-line); color:var(--color-muted); }

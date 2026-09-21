@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -142,7 +143,7 @@ func (s *Service) TaskInput(ctx context.Context, sid, pid, cid, input, candidate
 			createdTask = true
 			now := s.now()
 			id := s.id()
-			selected = &model.Task{ID: id, Title: model.TitleFallback(input), Description: model.TruncateRunes(strings.Join(strings.Fields(input), " "), 160), Stage: model.TaskStageClarifyInput, CurrentStep: model.ClarificationStep, ExpectedAction: model.ClarificationExpectedAction, Status: model.TaskStatusActive, Plan: []model.TaskPlanItem{}, CreatedAt: now, UpdatedAt: now}
+			selected = &model.Task{ID: id, Title: model.TitleFallback(input), Description: model.TruncateRunes(strings.Join(strings.Fields(input), " "), 160), Stage: model.TaskStageClarifyInput, CurrentStep: model.ClarificationStep, ExpectedAction: model.ClarificationExpectedAction, Status: model.TaskStatusActive, Plan: []model.TaskPlanItem{}, ValidationResult: model.ValidationResult{Status: model.ValidationNotValidated}, CreatedAt: now, UpdatedAt: now}
 			c.Tasks[id] = selected
 		}
 		first = true
@@ -154,6 +155,17 @@ func (s *Service) TaskInput(ctx context.Context, sid, pid, cid, input, candidate
 		// Existing v4 tasks already have confirmed history but no operation ledger.
 		if !created && len(c.Operations) == 0 && len(c.Messages) > 0 {
 			first = false
+		}
+		// A migrated feedback result has no proof of the mandatory gate. Its
+		// next input always restarts at execution; it can never become done
+		// directly, even if the input sounds positive.
+		if selected.Stage == model.TaskStageUserFeedback && selected.Status == model.TaskStatusActive && selected.ValidationResult.LegacyUnvalidated {
+			selected.Stage = model.TaskStageExecution
+			selected.ValidationResult = model.ValidationResult{Status: model.ValidationNotValidated}
+			selected.CurrentStep = "Проверить ранее созданный результат перед обратной связью"
+			selected.ExpectedAction = "agent: провести проверку результата"
+			selected.CurrentPlanItem = selected.ID + "-validation"
+			selected.Plan = append(selected.Plan, model.TaskPlanItem{ID: selected.CurrentPlanItem, Title: "Проверить результат", Status: model.TaskPlanItemCurrent, Stage: model.TaskStageExecution})
 		}
 		previous = *selected
 		previous.Plan = append([]model.TaskPlanItem{}, selected.Plan...)
@@ -195,6 +207,9 @@ func (s *Service) TaskInput(ctx context.Context, sid, pid, cid, input, candidate
 	baseMessages := conversation.BuildPrompt(s.settings, b, p, c, input)
 	var proposal model.Proposal
 	next := previous
+	if next.Stage == model.TaskStageClarifyInput && equipmentConfirmation(next, input) {
+		next.EquipmentConfirmed = true
+	}
 	var facts completion.Facts
 	var attemptErr error
 	outputs := make([]string, 0, maxAutonomousSteps)
@@ -219,9 +234,29 @@ func (s *Service) TaskInput(ctx context.Context, sid, pid, cid, input, candidate
 				attemptErr = call.Err()
 				break
 			}
-			proposal, attemptErr = s.codec.Decode(raw)
-			if attemptErr != nil {
-				break
+			decoded, decodeErr := s.codec.Decode(raw)
+			if decodeErr != nil {
+				// A malformed or out-of-contract task proposal is an untrusted
+				// candidate, not an infrastructure failure. In particular, a model
+				// trying to smuggle a stage jump through an unknown field must get
+				// the same bounded repair lifecycle as a decodable invalid jump.
+				violations := []invariant.Violation{{
+					InvariantID:       "task-proposal",
+					Reason:            "Некорректный снимок следующего шага задачи",
+					RepairInstruction: "Верни только полный JSON по контракту, сохрани текущий этап и не перескакивай этапы.",
+				}}
+				slog.Info("barista.task_transition", "source", "backend", "event", "task_transition", "correlation_id", completion.RequestID(ctx), "from_stage", next.Stage, "to_stage", "", "from_status", next.Status, "to_status", "", "result", "rejected", "category", "invalid_proposal", "duration_ms", 0)
+				if candidate == 2 {
+					refusalNeeded = true
+					break
+				}
+				messages = taskRepairPrompt(messages, violations)
+				continue
+			}
+			proposal = decoded
+			gateStarted := time.Time{}
+			if next.Stage == model.TaskStageExecution && proposal.Stage == model.TaskStageUserFeedback {
+				gateStarted = time.Now()
 			}
 			candidateNext, transitionErr := model.ApplyProposal(next, proposal, first && step == 0)
 			violations := []invariant.Violation{}
@@ -247,10 +282,19 @@ func (s *Service) TaskInput(ctx context.Context, sid, pid, cid, input, candidate
 				violations = append(violations, semantic...)
 			}
 			if len(violations) == 0 {
+				if next.Stage == model.TaskStageExecution && candidateNext.Stage == model.TaskStageUserFeedback {
+					candidateNext.ValidationResult = model.ValidationResult{Status: model.ValidationPassed, Summary: "Результат проверен перед отправкой на обратную связь."}
+					slog.Info("barista.task_validation_gate", "source", "backend", "event", "task_validation_gate", "correlation_id", completion.RequestID(ctx), "from_stage", next.Stage, "to_stage", candidateNext.Stage, "result", "passed", "category", "", "duration_ms", time.Since(gateStarted).Milliseconds())
+				}
+				slog.Info("barista.task_transition", "source", "backend", "event", "task_transition", "correlation_id", completion.RequestID(ctx), "from_stage", next.Stage, "to_stage", candidateNext.Stage, "from_status", next.Status, "to_status", candidateNext.Status, "result", "allowed", "category", "", "duration_ms", 0)
 				next = candidateNext
 				allowed = true
 				break
 			}
+			if !gateStarted.IsZero() {
+				slog.Info("barista.task_validation_gate", "source", "backend", "event", "task_validation_gate", "correlation_id", completion.RequestID(ctx), "from_stage", next.Stage, "to_stage", proposal.Stage, "result", "rejected", "category", "validation", "duration_ms", time.Since(gateStarted).Milliseconds())
+			}
+			slog.Info("barista.task_transition", "source", "backend", "event", "task_transition", "correlation_id", completion.RequestID(ctx), "from_stage", next.Stage, "to_stage", proposal.Stage, "from_status", next.Status, "to_status", proposal.Status, "result", "rejected", "category", "validation", "duration_ms", 0)
 			if candidate == 2 {
 				refusalNeeded = true
 				break
@@ -342,6 +386,24 @@ func (s *Service) TaskInput(ctx context.Context, sid, pid, cid, input, candidate
 		s.titles.Start(ctx, sid, pid, cid, input)
 	}
 	return out, nil, nil
+}
+
+// equipmentConfirmation is deliberately server-side: a proposal flag cannot
+// unlock clarify. The confirmation must answer an explicit equipment request
+// from the accepted task snapshot and repeat either its no-equipment value or
+// an affirmative confirmation with equipment wording.
+func equipmentConfirmation(task model.Task, input string) bool {
+	expected := strings.ToLower(task.ExpectedAction + " " + task.CurrentStep)
+	answer := strings.ToLower(strings.TrimSpace(input))
+	if !strings.Contains(expected, "оборуд") {
+		return false
+	}
+	if strings.Contains(expected, "оборудование не требуется") {
+		return strings.Contains(answer, "оборудование не требуется")
+	}
+	// Naming the device in direct answer to the accepted equipment question is
+	// an explicit confirmation too (for example, "кофемолка Niche Zero").
+	return strings.Contains(answer, "оборуд") || strings.Contains(answer, "кофемол") || strings.Contains(answer, "эспресс") || strings.Contains(answer, "турк") || strings.Contains(answer, "ворон") || strings.Contains(answer, "niche")
 }
 
 func taskSnapshot(task model.Task) (string, error) {

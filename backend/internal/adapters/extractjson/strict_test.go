@@ -5,6 +5,13 @@ import (
 	"testing"
 )
 
+func TestProposalRejectsServerOwnedValidationResult(t *testing.T) {
+	raw := `{"output":"x","understanding":"u","questions":[],"stage":"execution","current_step":"s","expected_action":"agent: s","status":"active","plan":[{"id":"p","title":"p","status":"current"}],"current_plan_item":"p","goal_confirmed":false,"positive_feedback":false,"validation_result":{"status":"passed","summary":"x"}}`
+	if _, err := (ProposalDecoder{}).Decode(raw); err == nil {
+		t.Fatal("accepted server-owned validation_result")
+	}
+}
+
 func TestFactsStrictShape(t *testing.T) {
 	for _, raw := range []string{`{}`, `null`, `[]`, `{"global_facts":[]}`, `{"project_facts":[]}`, `{"global_facts":null,"project_facts":[]}`, `{"global_facts":[],"project_facts":null}`, `{"global_facts":[],"project_facts":[],"other":[]}`, `{"global_facts":[1],"project_facts":[]}`, `{"global_facts":[" "],"project_facts":[]}`, `{"global_facts":["same","same"],"project_facts":[]}`, `{"global_facts":[],"global_facts":[],"project_facts":[]}`, `{"global_facts":[],"project_facts":[]} {}`, `{"global_facts":{},"project_facts":[]}`} {
 		t.Run(raw, func(t *testing.T) {

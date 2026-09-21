@@ -126,6 +126,10 @@ invariant validation и обновления памяти пользовател
 События пользовательских действий и основных ответов содержат correlation ID,
 результат, категорию ошибки и длительность, когда она применима. Логи не
 содержат secrets, credentials или неразрешённые текстовые payloads.
+Для допустимых LLM-вызовов `chat`, `title` и `summary` `log_text_payloads: true`
+сохраняет исходные request/response payload в журнале и console после redaction
+всех credentials; при `false` эти поля отсутствуют. Это не применяется к
+`invariant_validation`: его payload всегда запрещён.
 
 ## Runtime-конфигурация
 
