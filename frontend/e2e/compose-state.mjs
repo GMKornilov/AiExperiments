@@ -29,8 +29,8 @@ if (mode === "prepare") {
   assert.equal(failedMemory.memory_status, "error");
   assert.equal(failedMemory.messages.length, 8);
   const facts = await call(`/api/projects/${pid}/memory`);
-  assert.deepEqual(facts.global_facts, ["Оборудование: V60"]);
-  assert.deepEqual(facts.project_facts, ["Есть зёрна: Эфиопия"]);
+  assert.deepEqual(facts.global_facts, ["Оборудование: V60", "Есть зёрна: Эфиопия"]);
+  assert.deepEqual(facts.project_facts, []);
   const logs = await call(`/api/admin/logs?dialog_id=${cid}&action=lookup`);
   assert.equal(logs.found, true);
   assert.ok(logs.logs.some(log => log.purpose === "task_step"));
@@ -96,8 +96,12 @@ if (mode === "prepare") {
   assert.equal(resumed.chat.messages.length, 2);
   assert.equal(resumed.chat.tasks[0].stage, "clarify_input");
   const logs = await call(`/api/admin/logs?dialog_id=${expected.cid}&action=lookup`);
-  assert.ok(logs.logs.every(log => log.purpose !== "title"));
-  console.log("PASS: killed in-flight process restores paused step; Resume commits once; no repeated title");
+  const completedTitles = logs.logs.filter(log => log.purpose === "title" && log.event === "llm_response" && log.result === "success" && typeof log.call_id === "string" && log.call_id);
+  assert.equal(completedTitles.length, 1);
+  const titleCallID = completedTitles[0].call_id;
+  assert.equal(new Set(completedTitles.map(log => log.call_id)).size, 1);
+  assert.equal(logs.logs.filter(log => log.call_id === titleCallID && log.event === "llm_request" && log.purpose === "title" && log.result === "started").length, 1);
+  console.log("PASS: killed in-flight process restores paused step; Resume commits once; one completed post-Resume title call");
 } else if (mode === "audit") {
   const config = JSON.parse(await readFile(`${file}/compose.json`, "utf8"));
   assert.equal(config.services["barista-api"].ports, undefined);

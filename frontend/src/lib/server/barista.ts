@@ -7,9 +7,10 @@ const timeoutMilliseconds = 65_000;
 const taskTimeoutMilliseconds = 300_000;
 const bodyTimeoutMilliseconds = 10_000;
 const sessionCookie = "barista_session";
-const errorCategories = new Set(["config", "validation", "network", "timeout", "provider", "invalid_response", "not_found", "busy", "cancelled", "storage", "context_limit", "memory"]);
+const errorCategories = new Set(["config", "validation", "network", "timeout", "provider", "invalid_response", "not_found", "busy", "cancelled", "storage", "context_limit", "memory", "invariant_validation"]);
 const eventNames = new Set(["dialog_created", "dialog_selected", "dialog_deleted", "dialog_id_copied", "message_sent", "message_retried", "message_copied", "dialog_validation_failed", "message_failed", "admin_lookup", "admin_refresh", "strategy_selected", "branch_created", "branch_selected", "project_created", "project_selected", "project_deleted", "chat_created", "chat_selected", "chat_deleted", "memory_cleared", "bff_request_completed", "bff_request_failed"]);
 const contextStrategies = new Set(["sliding_window", "facts", "branching", "summary"]);
+const publicInvariantIDs = new Set(["equipment-availability", "beans-availability", "inventory-truth"]);
 
 type JSONRecord = Record<string, unknown>;
 
@@ -187,6 +188,7 @@ function projectDialog(value: unknown): JSONRecord | null {
 }
 
 function projectSuccess(method: string, path: string, value: unknown): unknown | null {
+  if (path === "/api/invariants" && method === "GET") return projectInvariants(value);
   if (path === "/api/profiles" && (method === "GET" || method === "POST")) return projectProfiles(value);
   if (/^\/api\/profiles\/[^/]+\/select$/.test(path) && method === "POST") return projectProfiles(value);
   if (path === "/api/projects" && method === "GET") return projectProjectList(value);
@@ -212,6 +214,23 @@ function projectSuccess(method: string, path: string, value: unknown): unknown |
   // the BFF so newly added journal fields never make an existing chat invisible.
   if (path.startsWith("/api/admin/logs")) return value;
   return value;
+}
+
+function projectInvariant(value: unknown): JSONRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const invariant = value as JSONRecord;
+  if (!only(invariant, ["id", "name", "description"]) || !string(invariant.id) || !string(invariant.name) || !string(invariant.description)) return null;
+  return { id: invariant.id, name: invariant.name, description: invariant.description };
+}
+
+function projectInvariants(value: unknown): JSONRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as JSONRecord;
+  if (!only(item, ["invariants"]) || !Array.isArray(item.invariants) || item.invariants.length !== 3) return null;
+  const invariants = item.invariants.map(projectInvariant);
+  if (!invariants.every((invariant): invariant is JSONRecord => invariant !== null)) return null;
+  if (new Set(invariants.map((invariant) => invariant.id)).size !== invariants.length || !invariants.every((invariant) => publicInvariantIDs.has(invariant.id as string))) return null;
+  return { invariants };
 }
 
 function projectProfile(value: unknown): JSONRecord | null {
@@ -349,6 +368,7 @@ async function forward(request: Request, method: string, path: string, body?: JS
 }
 
 export async function listDialogs(request: Request): Promise<Response> { return forward(request, "GET", "/api/dialogs"); }
+export async function listInvariants(request: Request): Promise<Response> { return forward(request, "GET", "/api/invariants"); }
 export async function listContextStrategies(request: Request): Promise<Response> { return forward(request, "GET", "/api/context-strategies"); }
 export async function createDialog(request: Request): Promise<Response> {
  const body = await readJSON(request);

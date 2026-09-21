@@ -1,4 +1,4 @@
-import type { APIError, AdminLogsResponse, Chat, ErrorCategory, LogEvent, Memory, ProfileList, Project, ProjectList, TaskInputResult } from "../model/types";
+import type { APIError, AdminLogsResponse, Chat, ErrorCategory, InvariantList, LogEvent, Memory, ProfileList, Project, ProjectList, TaskInputResult } from "../model/types";
 
 const genericError = "Не удалось получить ответ. Повторите отправку.";
 export class BaristaAPIError extends Error { constructor(readonly category: ErrorCategory, message = genericError) { super(message); } }
@@ -18,6 +18,7 @@ const chatPath = (projectID: string, chatID: string) => `${projectPath(projectID
 
 export const baristaClient = {
   projects: () => request<ProjectList>("/api/projects"),
+  invariants: () => request<InvariantList>("/api/invariants"),
   profiles: () => request<ProfileList>("/api/profiles"),
   createProfile: (profile: { name: string; style: string; constraints: string; additional_context: string }) => request<ProfileList>("/api/profiles", json(profile)),
   selectProfile: (id: string) => request<ProfileList>(`/api/profiles/${encodeURIComponent(id)}/select`, json({})),
@@ -46,5 +47,6 @@ export const baristaClient = {
 export function userFacingError(error: unknown) {
   if (error instanceof BaristaAPIError && error.category === "validation") return error.message;
   if (error instanceof BaristaAPIError && error.category === "storage") return "Хранилище временно недоступно. Повторите действие.";
+  if (error instanceof BaristaAPIError && error.category === "invariant_validation") return "Не удалось проверить инварианты. Повторите тот же запрос.";
   return genericError;
 }

@@ -43,6 +43,10 @@ func TestServerProcessRestartRetainsMemory(t *testing.T) {
 			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"{\"global_facts\":[\"global grinder\"],\"project_facts\":[\"project beans\"]}"}}]}`)
 			return
 		}
+		if body.Model == "validator" {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"{\"status\":\"allow\"}"}}]}`)
+			return
+		}
 		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"answer"}}]}`)
 	}))
 	defer upstream.Close()
@@ -62,7 +66,7 @@ func TestServerProcessRestartRetainsMemory(t *testing.T) {
 	write("config.yaml", "addr: '"+addr+"'\nllm_config_path: llm.yaml\nhistory_path: history.json\n")
 	write("prompt.txt", "BASE")
 	write("memory.txt", "Return strict JSON")
-	write("llm.yaml", "chat:\n  base_url: "+upstream.URL+"\n  api_key: TEST\n  model: chat\n  system_prompt_path: prompt.txt\ntext:\n  base_url: "+upstream.URL+"\n  api_key: TEST\n  model: text\n  system_prompt_path: prompt.txt\nmemory:\n  base_url: "+upstream.URL+"\n  api_key: TEST\n  model: memory\n  system_prompt_path: memory.txt\n")
+	write("llm.yaml", "chat:\n  base_url: "+upstream.URL+"\n  api_key: TEST\n  model: chat\n  system_prompt_path: prompt.txt\ntext:\n  base_url: "+upstream.URL+"\n  api_key: TEST\n  model: text\n  system_prompt_path: prompt.txt\nmemory:\n  base_url: "+upstream.URL+"\n  api_key: TEST\n  model: memory\n  system_prompt_path: memory.txt\ninvariant_validation:\n  base_url: "+upstream.URL+"\n  api_key: TEST\n  model: validator\n  system_prompt_path: prompt.txt\n")
 	client := &http.Client{Timeout: 5 * time.Second}
 	start := func() func() {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestPersistenceServerProcess$")

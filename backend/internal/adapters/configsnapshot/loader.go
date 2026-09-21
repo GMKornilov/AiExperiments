@@ -21,6 +21,9 @@ func Loader(path string) func() (agent.DialogSnapshot, error) {
 		if cfg.Memory != nil {
 			snap.Memory = &agent.FactsConfig{Snapshot: endpointSnapshot(cfg.Memory.Endpoint)}
 		}
+		if cfg.InvariantValidation != nil {
+			snap.InvariantValidation = &agent.FactsConfig{Snapshot: endpointSnapshot(cfg.InvariantValidation.Endpoint)}
+		}
 		return snap, nil
 	}
 }

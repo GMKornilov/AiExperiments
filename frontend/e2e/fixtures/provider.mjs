@@ -11,6 +11,18 @@ createServer(async (request, response) => {
   try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { response.writeHead(400).end(); return; }
   const text = body?.messages?.at(-1)?.content;
   if (typeof text !== "string") { response.writeHead(400).end(); return; }
+  if (body.model === "e2e-invariant-model") {
+    const prompt = body.messages.find((message) => message.role === "system")?.content;
+    let payload;
+    try { payload = JSON.parse(text); } catch { response.writeHead(400).end("invalid invariant payload"); return; }
+    const equipmentChecker = typeof prompt === "string" && prompt.includes("ONLY the equipment-availability checker");
+    if (equipmentChecker && payload?.subject === "user_input" && typeof payload.text === "string" && payload.text.includes("invariant-equipment-pre-conflict")) {
+      response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ status: "violation", reason: "V60 явно сломан.", repair_instruction: "Назовите доступное оборудование или выберите альтернативный способ." }) } }], usage: { prompt_tokens: 7, completion_tokens: 3 } }));
+      return;
+    }
+    response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ status: "allow" }) } }], usage: { prompt_tokens: 7, completion_tokens: 3 } }));
+    return;
+  }
   if (body.model === "e2e-facts-model") {
     if (text.includes("facts-error")) { response.writeHead(503).end("controlled facts failure"); return; }
     if (text.includes("facts-invalid")) {
@@ -40,14 +52,21 @@ createServer(async (request, response) => {
     let payload;
     try { payload = JSON.parse(text); } catch { response.writeHead(400).end("invalid memory payload"); return; }
     const latest = [...(payload?.messages ?? [])].reverse().find((message) => message?.role === "user")?.text ?? "";
-    // The extractor contract returns complete snapshots. Preserve prior facts unless
-    // the user explicitly says that a resource is unavailable or finished.
+    // The extractor returns complete snapshots. Equipment and beans are global by
+    // default; negative availability is retained as a replacement fact.
     let facts = [...(payload?.global_facts ?? [])];
     let projectFacts = [...(payload?.project_facts ?? [])];
     if (latest.includes("V60") && !facts.includes("Оборудование: V60")) facts.push("Оборудование: V60");
-    if (latest.includes("Эфиоп") && !projectFacts.includes("Есть зёрна: Эфиопия")) projectFacts.push("Есть зёрна: Эфиопия");
-    if (latest.includes("V60 больше нет")) facts = facts.filter((fact) => fact !== "Оборудование: V60");
-    if (latest.includes("Эфиопия закончилась")) projectFacts = projectFacts.filter((fact) => fact !== "Есть зёрна: Эфиопия");
+    if (latest.includes("Эфиоп") && !facts.includes("Есть зёрна: Эфиопия")) facts.push("Есть зёрна: Эфиопия");
+    if (latest.includes("Только для этого проекта") && latest.includes("Кения") && !projectFacts.includes("Есть зёрна: Кения")) projectFacts.push("Есть зёрна: Кения");
+    if (latest.includes("V60 больше нет") || latest.includes("V60 сломан")) {
+      facts = facts.filter((fact) => fact !== "Оборудование: V60");
+      if (!facts.includes("Оборудование: V60 — сломано")) facts.push("Оборудование: V60 — сломано");
+    }
+    if (latest.includes("Эфиопия закончилась")) {
+      facts = facts.filter((fact) => fact !== "Есть зёрна: Эфиопия");
+      if (!facts.includes("Зёрна: Эфиопия закончились")) facts.push("Зёрна: Эфиопия закончились");
+    }
     response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ global_facts: facts, project_facts: projectFacts }) } }], usage: { prompt_tokens: 7, completion_tokens: 3 } }));
     return;
   }

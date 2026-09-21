@@ -206,10 +206,10 @@ func TestTemperatureSnapshotsReachChatAndText(t *testing.T) {
 	writeFixture(t, filepath.Join(dir, "chat.txt"), "chat")
 	writeFixture(t, filepath.Join(dir, "text.txt"), "title")
 	cfg := filepath.Join(dir, "llm.yaml")
-	writeFixture(t, cfg, "chat:\n  base_url: "+upstream.URL+"\n  api_key: chat-key\n  model: chat\n  temperature: 0.7\n  system_prompt_path: chat.txt\ntext:\n  base_url: "+upstream.URL+"\n  api_key: text-key\n  model: text\n  temperature: 0\n  system_prompt_path: text.txt\n")
+	writeFixture(t, cfg, "chat:\n  base_url: "+upstream.URL+"\n  api_key: chat-key\n  model: chat\n  temperature: 0.7\n  system_prompt_path: chat.txt\ntext:\n  base_url: "+upstream.URL+"\n  api_key: text-key\n  model: text\n  temperature: 0\n  system_prompt_path: text.txt\ninvariant_validation:\n  base_url: "+upstream.URL+"\n  api_key: validator-key\n  model: validator\n  temperature: 0\n  system_prompt_path: text.txt\n")
 	h := New(session.NewStore(agent.OpenAIProvider{}), SnapshotLoader(cfg), observability.NewJournal(false, nil))
 	id := createDialog(t, h, "s")
-	writeFixture(t, cfg, "chat:\n  base_url: "+upstream.URL+"\n  api_key: chat-key-2\n  model: chat\n  temperature: 0.3\n  system_prompt_path: chat.txt\ntext:\n  base_url: "+upstream.URL+"\n  api_key: text-key-2\n  model: text\n  temperature: 1.2\n  system_prompt_path: text.txt\n")
+	writeFixture(t, cfg, "chat:\n  base_url: "+upstream.URL+"\n  api_key: chat-key-2\n  model: chat\n  temperature: 0.3\n  system_prompt_path: chat.txt\ntext:\n  base_url: "+upstream.URL+"\n  api_key: text-key-2\n  model: text\n  temperature: 1.2\n  system_prompt_path: text.txt\ninvariant_validation:\n  base_url: "+upstream.URL+"\n  api_key: validator-key\n  model: validator\n  temperature: 0\n  system_prompt_path: text.txt\n")
 	newID := createDialog(t, h, "s")
 	sendMessage(t, h, "s", id, "old", "old-question")
 	sendMessage(t, h, "s", newID, "new", "new-question")
@@ -248,7 +248,7 @@ func writeFixture(t *testing.T, path, text string) {
 	}
 }
 func nestedConfig(url, key, model, prompt string) string {
-	return "chat:\n  base_url: " + url + "\n  api_key: " + key + "\n  model: " + model + "\n  system_prompt_path: " + prompt + "\ntext:\n  base_url: " + url + "\n  api_key: " + key + "\n  model: title-" + model + "\n  system_prompt_path: " + prompt + "\n"
+	return "chat:\n  base_url: " + url + "\n  api_key: " + key + "\n  model: " + model + "\n  system_prompt_path: " + prompt + "\ntext:\n  base_url: " + url + "\n  api_key: " + key + "\n  model: title-" + model + "\n  system_prompt_path: " + prompt + "\ninvariant_validation:\n  base_url: " + url + "\n  api_key: " + key + "\n  model: validator-" + model + "\n  system_prompt_path: " + prompt + "\n"
 }
 func createDialog(t *testing.T, h http.Handler, sid string) string {
 	t.Helper()

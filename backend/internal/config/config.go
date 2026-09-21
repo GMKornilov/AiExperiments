@@ -33,6 +33,7 @@ type LLMConfig struct {
 	Summary               *SummaryConfig `yaml:"summary"`
 	Facts                 *FactsConfig   `yaml:"facts"`
 	Memory                *FactsConfig   `yaml:"memory"`
+	InvariantValidation   *FactsConfig   `yaml:"invariant_validation"`
 	ContextWindowMessages int            `yaml:"context_window_messages"`
 }
 type SummaryConfig struct {
@@ -90,6 +91,9 @@ func LoadLLM(path string) (LLMConfig, error) {
 	if raw["chat"] == nil || raw["text"] == nil {
 		return LLMConfig{}, fmt.Errorf("chat и text обязательны")
 	}
+	if raw["invariant_validation"] == nil {
+		return LLMConfig{}, fmt.Errorf("invariant_validation обязательна")
+	}
 	if raw["context_window_messages"] == nil {
 		cfg.ContextWindowMessages = 10
 	}
@@ -126,6 +130,12 @@ func LoadLLM(path string) (LLMConfig, error) {
 		if err := loadEndpoint(&cfg.Memory.Endpoint, filepath.Dir(path), raw["memory"]); err != nil {
 			return LLMConfig{}, fmt.Errorf("memory: %w", err)
 		}
+	}
+	if cfg.InvariantValidation == nil {
+		return LLMConfig{}, fmt.Errorf("invariant_validation обязательна")
+	}
+	if err := loadEndpoint(&cfg.InvariantValidation.Endpoint, filepath.Dir(path), raw["invariant_validation"]); err != nil {
+		return LLMConfig{}, fmt.Errorf("invariant_validation: %w", err)
 	}
 	return cfg, nil
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"aichallenge/week_1/task_1/internal/application/completion"
+	"aichallenge/week_1/task_1/internal/application/subagent"
 	"aichallenge/week_1/task_1/internal/domain/model"
 )
 
@@ -58,9 +59,5 @@ func (e *Extractor) Extract(ctx context.Context, in completion.MemoryInput) (fac
 	if err != nil {
 		return completion.Facts{}, completion.Invalid()
 	}
-	raw, err := e.client.Complete(ctx, "memory_extractor", []completion.Message{{Role: "system", Content: e.prompt}, {Role: "user", Content: string(data)}})
-	if err != nil {
-		return completion.Facts{}, err
-	}
-	return DecodeFacts(raw)
+	return subagent.Run(ctx, e.client, "memory_extractor", []completion.Message{{Role: "system", Content: e.prompt}, {Role: "user", Content: string(data)}}, DecodeFacts)
 }
