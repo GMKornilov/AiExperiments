@@ -6,6 +6,17 @@ personalization, task-state-machine и [invariants](../invariants/SPEC.md). Эт
 
 - HTTP декодирует transport, вызывает отдельные workspace/conversation/taskflow
   use cases и централизованно отображает безопасные ошибки.
+- Browser взаимодействует только с same-origin Route Handler BFF. Если feature
+  требует внешнего server-to-server вызова, BFF обращается к backend по private
+  server-side адресу, а backend владеет вызовом внешней системы и её секретной
+  конфигурацией; browser и frontend server не получают адрес или credentials
+  внешней системы. Точные public HTTP-контракты и AC feature остаются у её
+  владельца: для BrewMark MCP это [brewmark-mcp](../brewmark-mcp/SPEC.md).
+- Cross-service observability не передаётся через browser: доверенные
+  server-side producers публикуют schema-validated safe records в backend
+  collector, который разделяет chat и system journals. Владелец MCP collector,
+  retention, доступа и visual contract — [brewmark-mcp](../brewmark-mcp/SPEC.md);
+  этот документ не дублирует его поля или API.
 - Domain содержит типизированное состояние и детерминированные инварианты без
   I/O. JSON DTO живут на границах, application не импортирует concrete adapters.
 - Хранилище публикует copy-on-write candidate только после успешного сохранения.

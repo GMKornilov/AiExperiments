@@ -22,7 +22,10 @@ type Record struct {
 	Timestamp     time.Time  `json:"timestamp"`
 	Source        string     `json:"source"`
 	Event         string     `json:"event"`
+	Operation     string     `json:"operation,omitempty"`
+	Tool          string     `json:"tool,omitempty"`
 	Result        string     `json:"result"`
+	Outcome       string     `json:"outcome,omitempty"`
 	CorrelationID string     `json:"correlation_id"`
 	DialogID      string     `json:"dialog_id,omitempty"`
 	BranchID      string     `json:"branch_id,omitempty"`
@@ -125,6 +128,20 @@ func (j *Journal) Logs(dialogID string) []Record {
 	logs := make([]Record, 0)
 	for _, record := range j.records {
 		if record.DialogID == dialogID {
+			logs = append(logs, record)
+		}
+	}
+	return logs
+}
+
+func (j *Journal) MCPLogs() []Record {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	logs := make([]Record, 0)
+	for _, record := range j.records {
+		backend := record.Source == "backend" && record.Event == "mcp_tools_list" && record.Operation == "mcp_tools_list"
+		remote := (record.Source == "frontend_bff" && record.Event == "mcp_tools_request" && record.Operation == record.Event) || (record.Source == "mcp_server" && record.Event == record.Operation) || (record.Source == "brewmark" && record.Event == "brewmark_request" && record.Operation == record.Event)
+		if record.DialogID == "" && (backend || remote) {
 			logs = append(logs, record)
 		}
 	}

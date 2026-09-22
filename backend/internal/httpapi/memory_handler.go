@@ -19,19 +19,20 @@ import (
 
 // NewMemory wires endpoint-oriented use cases without owning their implementations.
 func NewMemory(cases UseCases, journal *observability.Journal) http.Handler {
-	return &memoryHandler{projectCases: cases.Projects, chatCases: cases.Chats, profileCases: cases.Profiles, memoryCases: cases.Memory, conversation: cases.Conversations, tasks: cases.Tasks, health: cases.Health, invariants: cases.Invariants, journal: journal}
+	return &memoryHandler{projectCases: cases.Projects, chatCases: cases.Chats, profileCases: cases.Profiles, memoryCases: cases.Memory, conversation: cases.Conversations, tasks: cases.Tasks, health: cases.Health, mcpToolsClient: cases.MCPTools, invariants: cases.Invariants, journal: journal}
 }
 
 type memoryHandler struct {
-	projectCases Projects
-	chatCases    Chats
-	profileCases Profiles
-	memoryCases  Memory
-	conversation Conversation
-	tasks        Tasks
-	health       Health
-	invariants   []invariant.Metadata
-	journal      *observability.Journal
+	projectCases   Projects
+	chatCases      Chats
+	profileCases   Profiles
+	memoryCases    Memory
+	conversation   Conversation
+	tasks          Tasks
+	health         Health
+	mcpToolsClient MCPTools
+	invariants     []invariant.Metadata
+	journal        *observability.Journal
 }
 type memoryStatusWriter struct {
 	http.ResponseWriter
@@ -86,7 +87,11 @@ func (h *memoryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		slog.Info("barista.memory_request", "source", "backend", "event", "memory_request", "result", result, "error_category", category, "correlation_id", llm.RequestID(ctx), "project_id", projectID, "chat_id", chatID, "duration_ms", time.Since(started).Milliseconds(), "path", r.URL.Path, "method", r.Method)
+		attrs := []any{"source", "backend", "event", "memory_request", "result", result, "error_category", category, "correlation_id", llm.RequestID(ctx), "project_id", projectID, "chat_id", chatID, "duration_ms", time.Since(started).Milliseconds(), "method", r.Method}
+		if r.URL.Path != "/api/mcp/tools" && r.URL.Path != "/api/internal/observability/mcp" {
+			attrs = append(attrs, "path", r.URL.Path)
+		}
+		slog.Info("barista.memory_request", attrs...)
 		if chatID != "" {
 			h.journal.Log(observability.Record{Source: "backend", Event: "http_request", Result: result, CorrelationID: llm.RequestID(ctx), DialogID: chatID, DurationMS: time.Since(started).Milliseconds(), ErrorCategory: category}, "")
 		}
@@ -110,11 +115,23 @@ func (h *memoryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeMemory(w, map[string]any{"invariants": h.invariants})
 		return
 	}
+	if r.URL.Path == "/api/mcp/tools" {
+		h.mcpTools(w, r)
+		return
+	}
+	if r.URL.Path == "/api/internal/observability/mcp" {
+		h.mcpObservability(w, r)
+		return
+	}
 	if h.health.StorageError() != nil {
 		failMemory(w, http.StatusServiceUnavailable, "storage")
 		return
 	}
 	if r.URL.Path == "/api/admin/logs" {
+		if r.URL.Query().Get("scope") == "mcp" {
+			h.mcpAdminLogs(w, r)
+			return
+		}
 		if r.URL.Query().Get("action") != "poll" && h.chatCases.HasChat(r.URL.Query().Get("dialog_id")) {
 			chatID = r.URL.Query().Get("dialog_id")
 		}
@@ -222,6 +239,15 @@ func (h *memoryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.NotFound(w, r)
+}
+
+func (h *memoryHandler) mcpAdminLogs(w http.ResponseWriter, r *http.Request) {
+	values := r.URL.Query()
+	if r.Method != http.MethodGet || len(values) != 1 || len(values["scope"]) != 1 || values.Get("scope") != "mcp" {
+		failMemory(w, http.StatusBadRequest, "validation")
+		return
+	}
+	writeMemory(w, map[string]any{"scope": "mcp", "retention": "backend_runtime", "logs": h.journal.MCPLogs()})
 }
 
 func (h *memoryHandler) admin(w http.ResponseWriter, r *http.Request) {

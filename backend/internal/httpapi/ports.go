@@ -51,6 +51,7 @@ type UseCases struct {
 	Conversations Conversation
 	Tasks         Tasks
 	Health        Health
+	MCPTools      MCPTools
 	Invariants    []invariant.Metadata
 }
 

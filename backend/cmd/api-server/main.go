@@ -28,6 +28,7 @@ import (
 	"aichallenge/week_1/task_1/internal/domain/model"
 	"aichallenge/week_1/task_1/internal/httpapi"
 	"aichallenge/week_1/task_1/internal/llm"
+	"aichallenge/week_1/task_1/internal/mcpclient"
 	"aichallenge/week_1/task_1/internal/observability"
 )
 
@@ -83,7 +84,11 @@ func main() {
 	closeStore := func() { store.Close(); titles.Close() }
 	defer closeStore()
 	journal := observability.NewJournal(cfg.LogTextPayloads, logger)
-	server := &http.Server{Addr: cfg.Addr, Handler: httpapi.NewMemory(httpapi.UseCases{Projects: workspaceService, Chats: workspaceService, Profiles: workspaceService, Memory: workspaceService, Conversations: conversationService, Tasks: tasks, Health: store, Invariants: invariants.Public()}, journal)}
+	mcpToolsClient, mcpClientErr := mcpclient.New(os.Getenv("BREWMARK_MCP_URL"))
+	if mcpClientErr != nil {
+		mcpToolsClient = nil
+	}
+	server := &http.Server{Addr: cfg.Addr, Handler: httpapi.NewMemory(httpapi.UseCases{Projects: workspaceService, Chats: workspaceService, Profiles: workspaceService, Memory: workspaceService, Conversations: conversationService, Tasks: tasks, Health: store, MCPTools: mcpToolsClient, Invariants: invariants.Public()}, journal)}
 	if err := serve(server, closeStore); err != nil {
 		logger.Error("barista.server", "source", "backend", "event", "server", "result", "failure", "correlation_id", requestID, "error_category", "network")
 		os.Exit(1)

@@ -11,6 +11,8 @@ services:
       BREWMARK_REQUEST_TIMEOUT: ${BREWMARK_REQUEST_TIMEOUT:-10s}
       MCP_ADDR: :8080
       MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-http://localhost:3000}
+      MCP_OBSERVABILITY_URL: http://barista-api:8080/api/internal/observability/mcp
+      MCP_OBSERVABILITY_TOKEN: ${MCP_OBSERVABILITY_TOKEN:-local-mcp-observability-token}
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/healthz"]
       interval: 10s
@@ -37,6 +39,9 @@ services:
     # BARISTA_ENV_FILE позволяет выбрать другой dotenv-файл, например deploy/production.env.
     env_file:
       - ${BARISTA_ENV_FILE:-.env}
+    environment:
+      BREWMARK_MCP_URL: http://brewmark-mcp:8080/mcp
+      MCP_OBSERVABILITY_TOKEN: ${MCP_OBSERVABILITY_TOKEN:-local-mcp-observability-token}
     volumes:
       - barista-history:/app/data
       - ./backend/config.yaml:/app/config.yaml:ro
@@ -50,6 +55,9 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
+    depends_on:
+      brewmark-mcp:
+        condition: service_healthy
     restart: unless-stopped
 
   barista-web:
@@ -62,11 +70,9 @@ services:
       - "3000:3000"
     environment:
       BARISTA_BACKEND_URL: http://barista-api:8080
-      BREWMARK_MCP_URL: http://brewmark-mcp:8080/mcp
+      MCP_OBSERVABILITY_TOKEN: ${MCP_OBSERVABILITY_TOKEN:-local-mcp-observability-token}
     depends_on:
       barista-api:
-        condition: service_healthy
-      brewmark-mcp:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000"]

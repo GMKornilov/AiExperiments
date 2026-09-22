@@ -29,5 +29,6 @@ export type CompressionState = { available: boolean; enabled: boolean; summary: 
 export type TokenUsage = { prompt_tokens: number; completion_tokens: number };
 // The admin journal is an observability surface, not a public domain API. Keep
 // its fields open so new backend metadata is visible without a BFF release.
-export type AdminLog = { [field: string]: unknown; call_id?: string; timestamp: string; source: "frontend" | "backend"; event: string; result: string; correlation_id: string; dialog_id?: string; message_id?: string; duration_ms?: number; error_category?: string; text?: string; purpose?: string; usage?: TokenUsage; payload?: string; http_status?: number; truncated?: boolean };
+export type AdminLog = { [field: string]: unknown; call_id?: string; timestamp: string; source: "frontend" | "frontend_bff" | "backend" | "mcp" | "mcp_server" | "brewmark"; event: string; operation?: string; result?: string; outcome?: "started" | "success" | "failure"; correlation_id: string; dialog_id?: string; message_id?: string; duration_ms?: number; error_category?: string; text?: string; purpose?: string; usage?: TokenUsage; payload?: string; http_status?: number; truncated?: boolean };
 export type AdminLogsResponse = { found: boolean; log_text_payloads: boolean; logs: AdminLog[] };
+export type MCPAdminLogsResponse = { scope: "mcp"; retention: "backend_runtime"; logs: AdminLog[] };

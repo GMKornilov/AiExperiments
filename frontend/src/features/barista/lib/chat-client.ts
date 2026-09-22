@@ -1,4 +1,4 @@
-import type { APIError, AdminLogsResponse, Chat, ErrorCategory, InvariantList, LogEvent, Memory, ProfileList, Project, ProjectList, TaskInputResult } from "../model/types";
+import type { APIError, AdminLogsResponse, Chat, ErrorCategory, InvariantList, LogEvent, MCPAdminLogsResponse, Memory, ProfileList, Project, ProjectList, TaskInputResult } from "../model/types";
 
 const genericError = "Не удалось получить ответ. Повторите отправку.";
 export class BaristaAPIError extends Error { constructor(readonly category: ErrorCategory, message = genericError) { super(message); } }
@@ -41,6 +41,7 @@ export const baristaClient = {
   clearProjectMemory: (projectID: string) => request<void>(`${projectPath(projectID)}/memory/project`, { method: "DELETE" }),
   // dialog_id remains the compatibility wire parameter; callers deal in chat IDs.
   logs: (chatID: string, action: "lookup" | "refresh" | "poll") => request<AdminLogsResponse>(`/api/admin/logs?dialog_id=${encodeURIComponent(chatID)}&action=${action}`),
+  mcpLogs: () => request<MCPAdminLogsResponse>("/api/admin/logs?scope=mcp"),
   event: async (event: LogEvent, fields: { project_id?: string; chat_id?: string; message_id?: string; error_category?: ErrorCategory } = {}) => { try { await request<unknown>("/api/events", json({ event, ...fields })); } catch { /* Telemetry never blocks chat. */ } },
 };
 

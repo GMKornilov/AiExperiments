@@ -31,6 +31,16 @@ describe("barista BFF", () => {
     expect(await result.json()).toEqual(logs);
   });
 
+  it("направляет MCP-журнал без dialog ID и action", async () => {
+    const logs = { scope: "mcp", retention: "backend_runtime", logs: [{ timestamp: "2026-01-01T00:00:00Z", source: "backend", event: "mcp_tools_list", operation: "mcp_tools_list", result: "success", correlation_id: "request-1", duration_ms: 12 }] };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(logs));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await adminLogs(new Request("http://web/api/admin/logs?scope=mcp"));
+    expect(result.status).toBe(200);
+    expect(await result.json()).toEqual(logs);
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/api/admin/logs?scope=mcp");
+  });
+
   it("валидирует и проецирует профили без лишних полей", async () => {
     const profiles = { profiles: [
       { id: "barista", name: "Бариста", style: "Дружелюбно", constraints: "Без выдумок", additional_context: "Рецепты", built_in: true },

@@ -35,17 +35,19 @@ type ToolError struct {
 func (e *ToolError) Error() string { return string(e.Code) }
 
 type Config struct {
-	BaseURL string
-	Token   string
-	Timeout time.Duration
-	Logger  *slog.Logger
+	BaseURL  string
+	Token    string
+	Timeout  time.Duration
+	Logger   *slog.Logger
+	Observer func(context.Context, string, string, int, time.Duration)
 }
 
 type Client struct {
-	baseURL *url.URL
-	token   string
-	http    *http.Client
-	logger  *slog.Logger
+	baseURL  *url.URL
+	token    string
+	http     *http.Client
+	logger   *slog.Logger
+	observer func(context.Context, string, string, int, time.Duration)
 }
 
 type correlationIDKey struct{}
@@ -76,7 +78,7 @@ func NewClient(cfg Config) (*Client, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	return &Client{baseURL: parsed, token: strings.TrimSpace(cfg.Token), http: &http.Client{Timeout: cfg.Timeout}, logger: cfg.Logger}, nil
+	return &Client{baseURL: parsed, token: strings.TrimSpace(cfg.Token), http: &http.Client{Timeout: cfg.Timeout}, logger: cfg.Logger, observer: cfg.Observer}, nil
 }
 
 type Grinder struct {
@@ -271,9 +273,13 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, target 
 	operation := "brewmark_get"
 	result := "success"
 	category := ""
+	status := 0
 	defer func() {
 		id := CorrelationID(ctx)
 		c.logger.Info("brewmark.mcp", "correlation_id", id, "operation", operation, "outcome", result, "error_category", category, "duration_ms", time.Since(started).Milliseconds())
+		if c.observer != nil {
+			c.observer(ctx, result, category, status, time.Since(started))
+		}
 	}()
 	u := *c.baseURL
 	u.Path = strings.TrimRight(u.Path, "/") + path
@@ -296,6 +302,7 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, target 
 		return unavailable()
 	}
 	defer response.Body.Close()
+	status = response.StatusCode
 	if response.StatusCode == http.StatusTooManyRequests {
 		result, category = "failure", string(UpstreamRateLimited)
 		return &ToolError{Code: UpstreamRateLimited, Message: "BrewMark API rate limit reached", Retryable: true, RetryAfter: validRetryAfter(response.Header.Get("Retry-After"))}

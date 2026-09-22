@@ -23,8 +23,10 @@ const maxRequestBodyBytes = 64 * 1024
 
 type Server struct{ handler http.Handler }
 type Config struct {
-	AllowedOrigins []string
-	Logger         *slog.Logger
+	AllowedOrigins     []string
+	Logger             *slog.Logger
+	ObservabilityURL   string
+	ObservabilityToken string
 }
 
 func New(client *brewmark.Client, cfg Config) *Server {
@@ -35,26 +37,26 @@ func New(client *brewmark.Client, cfg Config) *Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "brewmark-mcp", Version: "1.0.0"}, &mcp.ServerOptions{
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{ListChanged: false}},
 	})
-	register(server, logger, "brewmark_list_brew_methods", "List BrewMark brew methods.", emptySchema(), methodsSchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
+	register(server, logger, cfg, "brewmark_list_brew_methods", "List BrewMark brew methods.", emptySchema(), methodsSchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
 		if _, _, err := filters(raw); err != nil {
 			return nil, err
 		}
 		return client.Methods(ctx)
 	})
-	register(server, logger, "brewmark_list_brewers", "List BrewMark brewing machines and manual brewers.", brewerInputSchema(), brewersSchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
+	register(server, logger, cfg, "brewmark_list_brewers", "List BrewMark brewing machines and manual brewers.", brewerInputSchema(), brewersSchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
 		brand, method, err := filters(raw, "brand", "brewMethod")
 		if err != nil {
 			return nil, err
 		}
 		return client.Brewers(ctx, brand, method)
 	})
-	register(server, logger, "brewmark_list_filters", "List BrewMark coffee filters.", emptySchema(), filtersSchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
+	register(server, logger, cfg, "brewmark_list_filters", "List BrewMark coffee filters.", emptySchema(), filtersSchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
 		if _, _, err := filters(raw); err != nil {
 			return nil, err
 		}
 		return client.Filters(ctx)
 	})
-	register(server, logger, "brewmark_list_grinders", "List BrewMark coffee grinders.", grinderInputSchema(), grindersSchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
+	register(server, logger, cfg, "brewmark_list_grinders", "List BrewMark coffee grinders.", grinderInputSchema(), grindersSchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
 		brand, _, err := filters(raw, "brand")
 		if err != nil {
 			return nil, err
@@ -63,18 +65,55 @@ func New(client *brewmark.Client, cfg Config) *Server {
 	})
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, Logger: logger})
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", originGuard(cfg.AllowedOrigins, postOnly(limitBody(mcpHandler))))
+	mux.Handle("/mcp", originGuard(cfg.AllowedOrigins, postOnly(limitBody(protocolObserved(mcpHandler, cfg)))))
 	mux.Handle("/healthz", getOnly(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })))
-	return &Server{handler: observed(mux, logger)}
+	return &Server{handler: observed(mux, logger, cfg)}
+}
+
+func protocolObserved(next http.Handler, cfg Config) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		var request struct {
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal(body, &request)
+		operation := ""
+		if request.Method == "initialize" {
+			operation = "mcp_initialize"
+		}
+		if request.Method == "tools/list" {
+			operation = "mcp_tools_list"
+		}
+		if operation == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		started := time.Now()
+		writer := &statusWriter{ResponseWriter: w}
+		next.ServeHTTP(writer, r)
+		outcome := "success"
+		category := ""
+		if writer.status >= 400 {
+			outcome = "failure"
+			category = http.StatusText(writer.status)
+		}
+		emit(cfg, brewmark.CorrelationID(r.Context()), outcome, category, 0, time.Since(started), operation, "")
+	})
 }
 func (s *Server) Handler() http.Handler { return s.handler }
 
-func register(server *mcp.Server, logger *slog.Logger, name, description string, input, output any, operation func(context.Context, json.RawMessage) (any, error)) {
+func register(server *mcp.Server, logger *slog.Logger, cfg Config, name, description string, input, output any, operation func(context.Context, json.RawMessage) (any, error)) {
 	server.AddTool(&mcp.Tool{Name: name, Description: description, InputSchema: input, OutputSchema: output}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		started := time.Now()
 		outcome, category := "success", ""
 		defer func() {
 			logger.Info("brewmark.mcp", "correlation_id", brewmark.CorrelationID(ctx), "operation", name, "outcome", outcome, "error_category", category, "duration_ms", time.Since(started).Milliseconds())
+			emit(cfg, brewmark.CorrelationID(ctx), outcome, category, 0, time.Since(started), "mcp_tools_call", name)
 		}()
 		result, err := operation(ctx, request.Params.Arguments)
 		if err != nil {
@@ -217,7 +256,7 @@ func (writer *statusWriter) Write(data []byte) (int, error) {
 	return writer.ResponseWriter.Write(data)
 }
 
-func observed(next http.Handler, logger *slog.Logger) http.Handler {
+func observed(next http.Handler, logger *slog.Logger, cfg Config) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
 		id := requestID(r.Header.Get("X-Request-ID"))
@@ -231,7 +270,71 @@ func observed(next http.Handler, logger *slog.Logger) http.Handler {
 			outcome, category = "failure", http.StatusText(writer.status)
 		}
 		logger.Info("brewmark.mcp", "correlation_id", id, "operation", "http", "outcome", outcome, "error_category", category, "http_status", writer.status, "duration_ms", time.Since(started).Milliseconds())
+		if r.URL.Path != "/healthz" {
+			emit(cfg, id, outcome, category, writer.status, time.Since(started), "mcp_http", "")
+		}
 	})
+}
+
+func emit(cfg Config, id, outcome, category string, status int, duration time.Duration, operation, tool string) {
+	if cfg.ObservabilityURL == "" || cfg.ObservabilityToken == "" {
+		return
+	}
+	type event struct {
+		Timestamp     string `json:"timestamp"`
+		Source        string `json:"source"`
+		Event         string `json:"event"`
+		Operation     string `json:"operation"`
+		Outcome       string `json:"outcome"`
+		CorrelationID string `json:"correlation_id"`
+		DurationMS    int64  `json:"duration_ms"`
+		HTTPStatus    *int   `json:"http_status,omitempty"`
+		ErrorCategory string `json:"error_category,omitempty"`
+		Tool          string `json:"tool,omitempty"`
+	}
+	record := event{
+		Timestamp:     time.Now().UTC().Format(time.RFC3339Nano),
+		Source:        "mcp_server",
+		Event:         operation,
+		Operation:     operation,
+		Outcome:       outcome,
+		CorrelationID: id,
+		DurationMS:    duration.Milliseconds(),
+		ErrorCategory: category,
+		Tool:          tool,
+	}
+	if status != 0 {
+		record.HTTPStatus = &status
+	}
+	body, err := json.Marshal(record)
+	if err != nil {
+		return
+	}
+
+	deadline := time.Now().Add(time.Second)
+	client := &http.Client{}
+	for attempt := 0; attempt < 2 && time.Now().Before(deadline); attempt++ {
+		ctx, cancel := context.WithDeadline(context.Background(), deadline)
+		req, requestErr := http.NewRequestWithContext(ctx, http.MethodPost, cfg.ObservabilityURL, bytes.NewReader(body))
+		if requestErr == nil {
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+cfg.ObservabilityToken)
+			response, requestErr := client.Do(req)
+			if response != nil {
+				_ = response.Body.Close()
+			}
+			if requestErr == nil && response.StatusCode == http.StatusNoContent {
+				cancel()
+				return
+			}
+		}
+		cancel()
+	}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Error("brewmark.mcp.observability", "operation", "collector_publish", "outcome", "failure", "error_category", "collector_unavailable")
 }
 
 func requestID(value string) string {
