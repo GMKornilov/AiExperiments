@@ -61,15 +61,17 @@ function formatAllFields(log: AdminLog): string {
 
 export function LogCard({ log }: { log: AdminLog }) {
   const labels = { chat: "Ответ агента", title: "Название", summary: "Суммаризация", facts: "Facts", memory: "Память", memory_extractor: "Извлечение памяти" };
-  const title = log.event === "llm_request" ? "Запрос → LLM" : log.event === "llm_response" ? "Ответ ← LLM" : log.event;
-  const purpose = log.purpose ? labels[log.purpose as keyof typeof labels] ?? log.purpose : log.source;
-  return <article className={styles.card} data-result={log.result}>
+  const outcome = log.outcome ?? log.result ?? "success";
+  const title = log.event === "llm_request" ? "Запрос → LLM" : log.event === "llm_response" ? "Ответ ← LLM" : log.operation ?? log.event;
+  const purpose = log.purpose ? labels[log.purpose as keyof typeof labels] ?? log.purpose : log.event.startsWith("mcp_") || ["frontend_bff", "mcp", "mcp_server", "brewmark"].includes(log.source) ? "MCP → BrewMark" : log.source;
+  return <article className={styles.card} data-result={outcome}>
     <header className={styles.cardHeader}>
       <div><span className={styles.kind}>{purpose}</span><h2>{title}</h2></div>
-      <span className={styles.badge}>{log.result === "failure" ? "Ошибка" : log.result === "started" ? "Отправлен" : "Успешно"}</span>
+      <span className={styles.badge}>{outcome === "failure" ? "Ошибка" : outcome === "started" ? "Отправлен" : "Успешно"}</span>
     </header>
     <div className={styles.meta}><time dateTime={log.timestamp}>{new Date(log.timestamp).toLocaleString("ru-RU")}</time><span>{log.duration_ms ?? 0} мс</span>{log.http_status !== undefined && <span>HTTP {log.http_status}</span>}{log.error_category && <span>{log.error_category}</span>}</div>
     {log.call_id && <p className={styles.callID}>Вызов: {log.call_id}</p>}
+    {(log.event.startsWith("mcp_") || ["frontend_bff", "mcp", "mcp_server", "brewmark"].includes(log.source)) && <p className={styles.callID}>Источник: {log.source} · Корреляция: {log.correlation_id}</p>}
     {log.truncated && <p className={styles.error}>Ответ усечён: превышен предел чтения 1 МиБ.</p>}
     {log.payload !== undefined && <details className={styles.jsonBlock}><summary>{log.event === "llm_request" ? "Тело запроса" : "Тело ответа"}</summary><pre>{formatPayload(log.payload)}</pre></details>}
     {log.text && <details className={styles.jsonBlock}><summary>Текст события</summary><pre>{formatPayload(log.text)}</pre></details>}

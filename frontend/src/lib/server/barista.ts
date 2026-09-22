@@ -409,6 +409,9 @@ export async function postEvent(request: Request): Promise<Response> {
 export async function adminLogs(request: Request): Promise<Response> {
   const requestID = crypto.randomUUID();
   const url = new URL(request.url);
+  if (url.searchParams.get("scope") === "mcp" && [...url.searchParams.keys()].length === 1) {
+    return forward(request, "GET", "/api/admin/logs?scope=mcp");
+  }
   // dialog_id is retained only for compatibility with the existing Admin route.
   const chatID = url.searchParams.get("dialog_id");
   const action = url.searchParams.get("action");

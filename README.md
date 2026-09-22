@@ -48,9 +48,10 @@ cd backend && MCP_ADDR=127.0.0.1:8081 GOCACHE=$PWD/.gocache go run ./cmd/brewmar
 ```
 
 По умолчанию сервер слушает `http://127.0.0.1:8080`; команда выше явно запускает
-его на `http://127.0.0.1:8081`, чтобы не конфликтовать с API-бариста. Frontend BFF
-читает только server-side `BREWMARK_MCP_URL`; для такого запуска укажите в
-`frontend/.env.local` `BREWMARK_MCP_URL=http://127.0.0.1:8081/mcp`.
+его на `http://127.0.0.1:8081`, чтобы не конфликтовать с API-бариста. Backend
+API читает только server-side `BREWMARK_MCP_URL`; для такого запуска укажите в
+корневом `.env` `BREWMARK_MCP_URL=http://127.0.0.1:8081/mcp`. Frontend BFF
+обращается только к private `BARISTA_BACKEND_URL`.
 `BREWMARK_API_TOKEN` необязателен: пустое значение означает запросы к BrewMark
 без `Authorization`.
 
@@ -61,8 +62,8 @@ cd backend
 BREWMARK_MCP_URL=http://127.0.0.1:8081/mcp GOCACHE=$PWD/.gocache go run ./cmd/brewmark-mcp-client
 ```
 
-В Docker Compose MCP доступен с host по `http://localhost:8081/mcp`, а web
-обращается к нему по внутреннему адресу и ждёт `/healthz`. Образ сервера можно
+В Docker Compose MCP доступен с host по `http://localhost:8081/mcp`; `barista-api`
+обращается к нему по внутреннему адресу, а web ждёт только backend. Образ сервера можно
 собрать и разместить независимо от основного приложения:
 
 ```sh
