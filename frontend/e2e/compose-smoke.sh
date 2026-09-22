@@ -6,6 +6,7 @@ project="barista-refactor-smoke-$$"
 export BARISTA_SMOKE_DIR="$fixture_dir"
 export BARISTA_ENV_FILE="$fixture_dir/smoke.env"
 export BARISTA_SMOKE_PORT="${BARISTA_SMOKE_PORT:-13030}"
+export BREWMARK_MCP_SMOKE_PORT="${BREWMARK_MCP_SMOKE_PORT:-13081}"
 export BARISTA_E2E_URL="http://localhost:$BARISTA_SMOKE_PORT"
 node "$repo_root/frontend/e2e/prepare-compose.mjs" "$fixture_dir"
 compose=(docker compose --env-file "$fixture_dir/smoke.env" -p "$project" -f "$repo_root/docker-compose.yml" -f "$repo_root/frontend/e2e/compose.smoke.yaml")
@@ -18,6 +19,8 @@ trap cleanup EXIT
 "${compose[@]}" config --format json > "$fixture_dir/compose.json"
 "${compose[@]}" up --build -d --wait
 "${compose[@]}" exec -T barista-api sh -c 'test "$BARISTA_SMOKE_SENTINEL" = fixture-only && test "$SECURE_API_KEY" = e2e-dummy-credential && test ! -e /app/.env'
+"${compose[@]}" --profile diagnostics run --rm --build --no-deps brewmark-mcp-client
+node "$repo_root/frontend/e2e/mcp-compose-smoke.mjs" "http://127.0.0.1:$BREWMARK_MCP_SMOKE_PORT/mcp"
 npm --prefix "$repo_root/frontend" run test:e2e
 node "$repo_root/frontend/e2e/compose-state.mjs" prepare "$fixture_dir/expected.json"
 "${compose[@]}" logs --no-color >> "$fixture_dir/runtime.log" 2>&1

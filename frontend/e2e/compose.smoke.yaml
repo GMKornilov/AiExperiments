@@ -11,6 +11,16 @@ services:
   barista-web:
     ports: !override
       - "${BARISTA_SMOKE_PORT:-13030}:3000"
+  brewmark-mcp:
+    ports: !override
+      - "${BREWMARK_MCP_SMOKE_PORT:-13081}:8080"
+    environment:
+      BREWMARK_BASE_URL: http://fixture-provider:18081
+      BREWMARK_API_TOKEN: ""
+      BREWMARK_REQUEST_TIMEOUT: 2s
+      MCP_ALLOWED_ORIGINS: ""
+    depends_on:
+      - fixture-provider
   fixture-provider:
     image: node:24-alpine
     command: ["node", "/fixtures/provider.mjs"]
