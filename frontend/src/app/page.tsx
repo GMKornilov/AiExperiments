@@ -1,9 +1,14 @@
+import Link from "next/link";
 import { BaristaWorkspace } from "@/features/barista/components/barista-workspace";
 import styles from "./page.module.css";
 
 export default function Home() {
   return (
     <main className={styles.pageShell}>
+      <nav className={styles.navigation} aria-label="Основная навигация">
+        <Link href="/" aria-current="page">AI-бариста</Link>
+        <Link href="/mcp">MCP</Link>
+      </nav>
       <header className={styles.masthead}>
         <p className={styles.eyebrow}>Ваш кофейный напарник</p>
         <h1 className={styles.title}>

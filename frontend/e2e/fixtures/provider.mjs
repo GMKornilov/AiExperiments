@@ -4,6 +4,29 @@ const port = Number(process.env.BARISTA_PROVIDER_PORT ?? 18081);
 const seen = new Map();
 
 createServer(async (request, response) => {
+  const url = new URL(request.url ?? "/", "http://fixture-provider");
+  if (request.method === "GET") {
+    const catalogue = {
+      "/api/grinders": {
+        grinders: [{ id: 1, brand: "Comandante", model: "C40 MK4", minGrindIndex: 0, maxGrindIndex: 100, clicksPerFullRange: 40 }],
+        brands: ["Comandante"],
+      },
+      "/api/machines": {
+        machines: [{ id: 2, brand: "Hario", model: "V60 02", brewMethod: "V60", defaultWaterTempF: 200 }],
+        brands: ["Hario"],
+      },
+      "/api/filters": {
+        filters: [{ id: 3, name: "V60 Paper Filter 02", type: "paper", description: "Paper filter for V60 02." }],
+      },
+      "/api/brew-methods": {
+        data: [{ id: "V60", label: "V60", defaultRatio: 16 }],
+      },
+    };
+    const body = catalogue[url.pathname];
+    if (!body) { response.writeHead(404).end(); return; }
+    response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(body));
+    return;
+  }
   if (request.method !== "POST") { response.writeHead(405).end(); return; }
   const chunks = [];
   for await (const chunk of request) chunks.push(chunk);
@@ -78,7 +101,7 @@ createServer(async (request, response) => {
     return;
   }
   const titleRequest = body.model === "e2e-title-model";
-  const taskStateRaw = body.messages.find(message => message.role === "system")?.content.split("TASK_STATE: ")[1];
+  const taskStateRaw = extractTaskState(body.messages.find(message => message.role === "system")?.content);
   const taskState = taskStateRaw ? JSON.parse(taskStateRaw) : null;
   const key = `${body.model}:${text}`;
   const count = (seen.get(key) ?? 0) + 1;
@@ -139,3 +162,29 @@ createServer(async (request, response) => {
   response.writeHead(200, { "Content-Type": "application/json" });
   response.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: answer } }], usage }));
 }).listen(port, process.env.BARISTA_PROVIDER_HOST ?? "127.0.0.1", () => console.log(`fixture provider on ${port}`));
+
+function extractTaskState(prompt) {
+  if (typeof prompt !== "string") return null;
+
+  const start = prompt.indexOf("TASK_STATE:");
+  if (start === -1) return null;
+  const jsonStart = prompt.indexOf("{", start + "TASK_STATE:".length);
+  if (jsonStart === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = jsonStart; index < prompt.length; index += 1) {
+    const character = prompt[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') inString = true;
+    else if (character === "{") depth += 1;
+    else if (character === "}" && --depth === 0) return prompt.slice(jsonStart, index + 1);
+  }
+  return null;
+}

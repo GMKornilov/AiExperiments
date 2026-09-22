@@ -36,6 +36,46 @@ cd frontend && cp .env.example .env.local && npm ci && npm run dev
 
 Откройте [localhost:3000](http://localhost:3000).
 
+### BrewMark MCP
+
+Отдельный HTTP MCP-сервер отдаёт read-only каталог кофейного оборудования.
+Для локального запуска нужны те же корневой `.env` и frontend `.env.local`:
+
+```sh
+cp -n .env.example .env
+cp -n frontend/.env.example frontend/.env.local
+cd backend && MCP_ADDR=127.0.0.1:8081 GOCACHE=$PWD/.gocache go run ./cmd/brewmark-mcp-server
+```
+
+По умолчанию сервер слушает `http://127.0.0.1:8080`; команда выше явно запускает
+его на `http://127.0.0.1:8081`, чтобы не конфликтовать с API-бариста. Frontend BFF
+читает только server-side `BREWMARK_MCP_URL`; для такого запуска укажите в
+`frontend/.env.local` `BREWMARK_MCP_URL=http://127.0.0.1:8081/mcp`.
+`BREWMARK_API_TOKEN` необязателен: пустое значение означает запросы к BrewMark
+без `Authorization`.
+
+Диагностический клиент проверяет MCP `initialize`, `ping` и `tools/list`:
+
+```sh
+cd backend
+BREWMARK_MCP_URL=http://127.0.0.1:8081/mcp GOCACHE=$PWD/.gocache go run ./cmd/brewmark-mcp-client
+```
+
+В Docker Compose MCP доступен с host по `http://localhost:8081/mcp`, а web
+обращается к нему по внутреннему адресу и ждёт `/healthz`. Образ сервера можно
+собрать и разместить независимо от основного приложения:
+
+```sh
+docker build -f backend/Dockerfile.mcp -t brewmark-mcp ./backend
+docker run --rm -p 8081:8080 \
+  -e BREWMARK_BASE_URL=https://brewmark.io \
+  -e MCP_ALLOWED_ORIGINS=http://localhost:3000 \
+  brewmark-mcp
+```
+
+Перед публикацией в недоверенной сети добавьте аутентификацию и rate limiting:
+в первой версии endpoint не защищает клиентов MCP.
+
 В `backend/llm.yaml` обязательны секции `chat`, `text` и `memory`. Секция
 `memory` использует [memory extractor prompt](backend/prompts/memory-extractor-system.txt)
 и должна возвращать строгий JSON с `global_facts` и `project_facts`.
@@ -74,7 +114,7 @@ BARISTA_ENV_FILE=deploy/production.env docker compose up --build -d
 Git. Конфигурационный YAML и prompts монтируются read-only; backend не
 публикует порт наружу, а web обращается к нему по внутренней сети Compose.
 Контейнеры перезапускаются после сбоя (`unless-stopped`), а web ждёт успешный
-`/healthz` backend. Для обновления используйте `docker compose up --build -d`;
+`/healthz` backend и MCP. Для обновления используйте `docker compose up --build -d`;
 для просмотра состояния — `docker compose ps` и `docker compose logs -f`.
 
 История хранится в одном JSON-файле версии 3 по `history_path`; она содержит

@@ -1,4 +1,36 @@
 services:
+  brewmark-mcp:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.mcp
+    ports:
+      - "${MCP_PORT:-8081}:8080"
+    environment:
+      BREWMARK_BASE_URL: ${BREWMARK_BASE_URL:-https://brewmark.io}
+      BREWMARK_API_TOKEN: ${BREWMARK_API_TOKEN:-}
+      BREWMARK_REQUEST_TIMEOUT: ${BREWMARK_REQUEST_TIMEOUT:-10s}
+      MCP_ADDR: :8080
+      MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-http://localhost:3000}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # A small operator-facing executable for checking the deployed MCP registry.
+  # It is opt-in so a normal application stack runs only the server.
+  brewmark-mcp-client:
+    profiles: ["diagnostics"]
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.mcp-client
+    environment:
+      BREWMARK_MCP_URL: http://brewmark-mcp:8080/mcp
+    depends_on:
+      brewmark-mcp:
+        condition: service_healthy
+
   barista-api:
     build: ./backend
     # Файл передаётся только запущенному контейнеру и не входит в image.
@@ -30,8 +62,11 @@ services:
       - "3000:3000"
     environment:
       BARISTA_BACKEND_URL: http://barista-api:8080
+      BREWMARK_MCP_URL: http://brewmark-mcp:8080/mcp
     depends_on:
       barista-api:
+        condition: service_healthy
+      brewmark-mcp:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000"]
