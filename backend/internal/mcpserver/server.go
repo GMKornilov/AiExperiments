@@ -37,31 +37,31 @@ func New(client *brewmark.Client, cfg Config) *Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "brewmark-mcp", Version: "1.0.0"}, &mcp.ServerOptions{
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{ListChanged: false}},
 	})
-	register(server, logger, cfg, "brewmark_list_brew_methods", "List BrewMark brew methods.", emptySchema(), methodsSchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
-		if _, _, err := filters(raw); err != nil {
+	register(server, logger, cfg, contract("brewmark_list_brew_methods"), methodsSchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
+		if _, err := filters(raw); err != nil {
 			return nil, err
 		}
 		return client.Methods(ctx)
 	})
-	register(server, logger, cfg, "brewmark_list_brewers", "List BrewMark brewing machines and manual brewers.", brewerInputSchema(), brewersSchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
-		brand, method, err := filters(raw, "brand", "brewMethod")
+	register(server, logger, cfg, contract("brewmark_list_brewers"), brewersSchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
+		values, err := filters(raw, "brand", "name")
 		if err != nil {
 			return nil, err
 		}
-		return client.Brewers(ctx, brand, method)
+		return client.BrewersByName(ctx, values["brand"], values["name"])
 	})
-	register(server, logger, cfg, "brewmark_list_filters", "List BrewMark coffee filters.", emptySchema(), filtersSchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
-		if _, _, err := filters(raw); err != nil {
+	register(server, logger, cfg, contract("brewmark_list_filters"), filtersSchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
+		if _, err := filters(raw); err != nil {
 			return nil, err
 		}
 		return client.Filters(ctx)
 	})
-	register(server, logger, cfg, "brewmark_list_grinders", "List BrewMark coffee grinders.", grinderInputSchema(), grindersSchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
-		brand, _, err := filters(raw, "brand")
+	register(server, logger, cfg, contract("brewmark_list_grinders"), grindersSchema(), func(ctx context.Context, raw json.RawMessage) (any, error) {
+		values, err := filters(raw, "brand", "name")
 		if err != nil {
 			return nil, err
 		}
-		return client.Grinders(ctx, brand)
+		return client.GrindersByName(ctx, values["brand"], values["name"])
 	})
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true, Logger: logger})
 	mux := http.NewServeMux()
@@ -107,13 +107,25 @@ func protocolObserved(next http.Handler, cfg Config) http.Handler {
 }
 func (s *Server) Handler() http.Handler { return s.handler }
 
-func register(server *mcp.Server, logger *slog.Logger, cfg Config, name, description string, input, output any, operation func(context.Context, json.RawMessage) (any, error)) {
-	server.AddTool(&mcp.Tool{Name: name, Description: description, InputSchema: input, OutputSchema: output}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func contract(name string) brewmark.ToolContract {
+	value, ok := brewmark.ToolContractByName(name)
+	if !ok {
+		panic("unknown BrewMark tool contract")
+	}
+	return value
+}
+
+func register(server *mcp.Server, logger *slog.Logger, cfg Config, tool brewmark.ToolContract, output any, operation func(context.Context, json.RawMessage) (any, error)) {
+	var input any
+	if err := json.Unmarshal(tool.InputSchema, &input); err != nil {
+		panic("invalid BrewMark tool input schema")
+	}
+	server.AddTool(&mcp.Tool{Name: tool.Name, Description: tool.Description, InputSchema: input, OutputSchema: output}, func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		started := time.Now()
 		outcome, category := "success", ""
 		defer func() {
-			logger.Info("brewmark.mcp", "correlation_id", brewmark.CorrelationID(ctx), "operation", name, "outcome", outcome, "error_category", category, "duration_ms", time.Since(started).Milliseconds())
-			emit(cfg, brewmark.CorrelationID(ctx), outcome, category, 0, time.Since(started), "mcp_tools_call", name)
+			logger.Info("brewmark.mcp", "correlation_id", brewmark.CorrelationID(ctx), "operation", tool.Name, "outcome", outcome, "error_category", category, "duration_ms", time.Since(started).Milliseconds())
+			emit(cfg, brewmark.CorrelationID(ctx), outcome, category, 0, time.Since(started), "mcp_tools_call", tool.Name)
 		}()
 		result, err := operation(ctx, request.Params.Arguments)
 		if err != nil {
@@ -126,7 +138,7 @@ func register(server *mcp.Server, logger *slog.Logger, cfg Config, name, descrip
 			return toolFailure(err), nil
 		}
 		count := countResult(result)
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "Found " + itoa(count) + " " + resultName(name)}}, StructuredContent: result}, nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "Found " + itoa(count) + " " + resultName(tool.Name)}}, StructuredContent: result}, nil
 	})
 }
 func toolFailure(err error) *mcp.CallToolResult {
@@ -136,16 +148,16 @@ func toolFailure(err error) *mcp.CallToolResult {
 	}
 	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: toolErr.Message}}, StructuredContent: toolErr}
 }
-func filters(raw json.RawMessage, allowed ...string) (string, string, error) {
+func filters(raw json.RawMessage, allowed ...string) (map[string]string, error) {
 	var values map[string]json.RawMessage
 	if len(raw) == 0 {
 		raw = []byte("{}")
 	}
 	if json.Unmarshal(raw, &values) != nil {
-		return "", "", invalidArgument()
+		return nil, invalidArgument()
 	}
 	if values == nil {
-		return "", "", invalidArgument()
+		return nil, invalidArgument()
 	}
 	allow := map[string]bool{}
 	for _, name := range allowed {
@@ -153,7 +165,7 @@ func filters(raw json.RawMessage, allowed ...string) (string, string, error) {
 	}
 	for name := range values {
 		if !allow[name] {
-			return "", "", invalidArgument()
+			return nil, invalidArgument()
 		}
 	}
 	get := func(name string) (string, error) {
@@ -171,15 +183,15 @@ func filters(raw json.RawMessage, allowed ...string) (string, string, error) {
 		}
 		return value, nil
 	}
-	brand, err := get("brand")
-	if err != nil {
-		return "", "", err
+	result := make(map[string]string, len(allowed))
+	for _, name := range allowed {
+		value, err := get(name)
+		if err != nil {
+			return nil, err
+		}
+		result[name] = value
 	}
-	method, err := get("brewMethod")
-	if err != nil {
-		return "", "", err
-	}
-	return brand, method, nil
+	return result, nil
 }
 func invalidArgument() error {
 	return &brewmark.ToolError{Code: brewmark.InvalidArgument, Message: "Invalid tool arguments", Retryable: false}

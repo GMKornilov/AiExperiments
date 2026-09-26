@@ -8,42 +8,63 @@ import (
 	"time"
 )
 
-func TestClientGrindersAddsTokenAndNormalizesBrands(t *testing.T) {
+const grinderFixture = `{"id":1,"brand":"Timemore","name":" Chestnut C3 ","minSetting":0,"maxSetting":24,"settingUnit":"CLICKS","espressoAnchor":8,"filterAnchor":16,"coarseAnchor":22,"mokaAnchor":null,"frenchPressAnchor":null,"burrType":null,"createdAt":"2026-09-24T00:00:00Z"}`
+const brewerFixture = `{"id":1,"brand":"Moccamaster","name":" KBGV ","brewMethod":"BATCH_BREW","minBatchGrams":250,"maxBatchGrams":1250,"createdAt":"2026-09-24T00:00:00Z"}`
+const filterFixture = `{"id":1,"name":"Paper #4","grindAdjustment":1,"createdAt":"2026-09-24T00:00:00Z"}`
+const methodFixture = `{"id":"V60","label":"V60","defaultRatio":16,"defaultGrindSetting":20,"description":"Pour over"}`
+
+func TestClientCatalogFixtures(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		if got := request.Header.Get("Authorization"); got != "Bearer secret" {
-			t.Errorf("Authorization = %q", got)
+		switch request.URL.Path {
+		case "/api/grinders":
+			if request.Header.Get("Authorization") != "Bearer secret" || request.URL.Query().Get("brand") != "Timemore" {
+				t.Fatalf("unexpected grinder request: %s", request.URL.String())
+			}
+			_, _ = w.Write([]byte(`{"grinders":[` + grinderFixture + `],"brands":["Timemore","Timemore"],"byBrand":{"Timemore":[]}}`))
+		case "/api/machines":
+			if request.URL.Query().Get("brand") != "Moccamaster" || request.URL.RawQuery != "brand=Moccamaster" {
+				t.Fatalf("unexpected brewer request: %s", request.URL.String())
+			}
+			_, _ = w.Write([]byte(`{"machines":[` + brewerFixture + `],"brands":["Moccamaster"],"byBrand":{"Moccamaster":[]}}`))
+		case "/api/filters":
+			_, _ = w.Write([]byte(`{"filters":[` + filterFixture + `]}`))
+		case "/api/brew-methods":
+			_, _ = w.Write([]byte(`{"data":[` + methodFixture + `]}`))
+		default:
+			t.Fatalf("unexpected path %s", request.URL.Path)
 		}
-		if got := request.URL.Query().Get("brand"); got != "Hario" {
-			t.Errorf("brand = %q", got)
-		}
-		_, _ = w.Write([]byte(`{"grinders":[{"id":1,"brand":"Hario","model":"M","minGrindIndex":1,"maxGrindIndex":2,"clicksPerFullRange":3}],"brands":["Hario","Hario"]}`))
 	}))
 	defer server.Close()
 	client, err := NewClient(Config{BaseURL: server.URL, Token: " secret ", Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := client.Grinders(context.Background(), "Hario")
-	if err != nil {
-		t.Fatal(err)
+	if result, err := client.Grinders(context.Background(), "Timemore"); err != nil || result.Count != 1 || result.Grinders[0].Name != " Chestnut C3 " || result.Grinders[0].MokaAnchor != nil || result.Grinders[0].BurrType != nil {
+		t.Fatalf("grinders=%#v err=%v", result, err)
 	}
-	if result.Count != 1 || len(result.Brands) != 1 || result.Brands[0] != "Hario" {
-		t.Fatalf("unexpected result: %#v", result)
+	if result, err := client.Brewers(context.Background(), "Moccamaster"); err != nil || result.Count != 1 || result.Brewers[0].MinBatchGrams != 250 {
+		t.Fatalf("brewers=%#v err=%v", result, err)
+	}
+	if result, err := client.Filters(context.Background()); err != nil || result.Count != 1 || result.Filters[0].GrindAdjustment != 1 {
+		t.Fatalf("filters=%#v err=%v", result, err)
+	}
+	if result, err := client.Methods(context.Background()); err != nil || result.Count != 1 || result.Methods[0].ID != "V60" {
+		t.Fatalf("methods=%#v err=%v", result, err)
 	}
 }
 
-func TestClientErrors(t *testing.T) {
+func TestClientNameLookupFiltersLocally(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Query().Get("name") != "" || request.URL.Query().Get("model") != "" {
+			t.Fatal("name and model must not be sent upstream")
+		}
 		switch request.URL.Path {
 		case "/api/grinders":
-			w.Header().Set("Retry-After", "10")
-			w.WriteHeader(http.StatusTooManyRequests)
-		case "/api/filters":
-			_, _ = w.Write([]byte(`{"filters":[{"id":1,"name":"f"}]}`))
-		default:
-			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"grinders":[` + grinderFixture + `,` + `{"id":2,"brand":"Timemore","name":"Other","minSetting":0,"maxSetting":24,"settingUnit":"CLICKS","espressoAnchor":8,"filterAnchor":16,"coarseAnchor":22,"mokaAnchor":1,"frenchPressAnchor":2,"burrType":"CONICAL","createdAt":"2026-09-24T00:00:00Z"}` + `],"brands":["Timemore"]}`))
+		case "/api/machines":
+			_, _ = w.Write([]byte(`{"machines":[` + brewerFixture + `,` + `{"id":2,"brand":"Moccamaster","name":"Duplicate","brewMethod":"BATCH_BREW","minBatchGrams":1,"maxBatchGrams":2,"createdAt":"2026-09-24T00:00:00Z"},` + `{"id":3,"brand":"Moccamaster","name":" duplicate ","brewMethod":"BATCH_BREW","minBatchGrams":1,"maxBatchGrams":2,"createdAt":"2026-09-24T00:00:00Z"}` + `],"brands":["Moccamaster"]}`))
 		}
 	}))
 	defer server.Close()
@@ -51,40 +72,28 @@ func TestClientErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.Grinders(context.Background(), "")
-	if got := err.(*ToolError).Code; got != UpstreamRateLimited {
-		t.Fatalf("code = %s", got)
+	result, err := client.GrindersByName(context.Background(), "Timemore", "chestnut c3")
+	if err != nil || result.Count != 1 || result.MatchStatus != "exact" || len(result.Brands) != 1 {
+		t.Fatalf("grinders=%#v err=%v", result, err)
 	}
-	_, err = client.Filters(context.Background())
-	if got := err.(*ToolError).Code; got != BadUpstreamResponse {
-		t.Fatalf("code = %s", got)
+	result, err = client.GrindersByName(context.Background(), "Timemore", "missing")
+	if err != nil || result.Count != 0 || result.MatchStatus != "empty" || len(result.Brands) != 0 {
+		t.Fatalf("empty grinders=%#v err=%v", result, err)
 	}
-}
-
-func TestClientMethodsAcceptsDataEnvelope(t *testing.T) {
-	t.Parallel()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[{"name":"V60","ratio":16}]}`))
-	}))
-	defer server.Close()
-	client, err := NewClient(Config{BaseURL: server.URL, Timeout: time.Second})
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := client.Methods(context.Background())
-	if err != nil || result.Count != 1 || result.Methods[0]["name"] != "V60" {
-		t.Fatalf("result=%#v err=%v", result, err)
+	brewers, err := client.BrewersByName(context.Background(), "Moccamaster", "duplicate")
+	if err != nil || brewers.Count != 2 || brewers.MatchStatus != "ambiguous" {
+		t.Fatalf("brewers=%#v err=%v", brewers, err)
 	}
 }
 
-func TestClientBrandsRequiresValidProvidedArray(t *testing.T) {
+func TestClientRejectsInvalidRequiredAndNullableFields(t *testing.T) {
 	t.Parallel()
 	for _, body := range []string{
-		`{"grinders":[{"id":1,"brand":"Hario","model":"M"}],"brands":null}`,
-		`{"grinders":[{"id":1,"brand":"Hario","model":"M"}],"brands":"Hario"}`,
-		`{"grinders":[{"id":1,"brand":"Hario","model":"M"}],"brands":[""]}`,
+		`{"grinders":[{"id":1,"brand":"A","name":"B","minSetting":1,"maxSetting":2,"settingUnit":"CLICKS","espressoAnchor":1,"filterAnchor":2,"coarseAnchor":3,"mokaAnchor":"wrong","frenchPressAnchor":null,"burrType":null,"createdAt":"2026-09-24T00:00:00Z"}]}`,
+		`{"grinders":[{"id":1,"brand":"A","name":"B","minSetting":1,"maxSetting":2,"settingUnit":"CLICKS","espressoAnchor":1,"filterAnchor":2,"coarseAnchor":3,"mokaAnchor":null,"frenchPressAnchor":null,"burrType":"","createdAt":"2026-09-24T00:00:00Z"}]}`,
+		`{"grinders":[{"id":1,"brand":"A","name":"B","minSetting":1,"maxSetting":2,"settingUnit":"CLICKS","espressoAnchor":1,"filterAnchor":2,"coarseAnchor":3,"mokaAnchor":null,"frenchPressAnchor":null,"burrType":null}]}`,
 	} {
-		t.Run(body, func(t *testing.T) {
+		t.Run("invalid fixture", func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) }))
 			defer server.Close()
 			client, err := NewClient(Config{BaseURL: server.URL, Timeout: time.Second})
@@ -99,18 +108,25 @@ func TestClientBrandsRequiresValidProvidedArray(t *testing.T) {
 	}
 }
 
-func TestClientBrandsFallsBackOnlyWhenAbsent(t *testing.T) {
+func TestClientErrors(t *testing.T) {
 	t.Parallel()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"grinders":[{"id":1,"brand":"Hario","model":"M"}]}`))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/api/grinders" {
+			w.Header().Set("Retry-After", "10")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(`{"filters":[{"id":1,"name":"f"}]}`))
 	}))
 	defer server.Close()
 	client, err := NewClient(Config{BaseURL: server.URL, Timeout: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := client.Grinders(context.Background(), "")
-	if err != nil || len(result.Brands) != 1 || result.Brands[0] != "Hario" {
-		t.Fatalf("result=%#v err=%v", result, err)
+	if _, err = client.Grinders(context.Background(), ""); err.(*ToolError).Code != UpstreamRateLimited {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err = client.Filters(context.Background()); err.(*ToolError).Code != BadUpstreamResponse {
+		t.Fatalf("err=%v", err)
 	}
 }

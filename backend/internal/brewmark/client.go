@@ -82,43 +82,61 @@ func NewClient(cfg Config) (*Client, error) {
 }
 
 type Grinder struct {
-	ID                 int     `json:"id"`
-	Brand              string  `json:"brand"`
-	Model              string  `json:"model"`
-	MinGrindIndex      float64 `json:"minGrindIndex"`
-	MaxGrindIndex      float64 `json:"maxGrindIndex"`
-	ClicksPerFullRange float64 `json:"clicksPerFullRange"`
+	ID                int      `json:"id"`
+	Brand             string   `json:"brand"`
+	Name              string   `json:"name"`
+	MinSetting        float64  `json:"minSetting"`
+	MaxSetting        float64  `json:"maxSetting"`
+	SettingUnit       string   `json:"settingUnit"`
+	EspressoAnchor    float64  `json:"espressoAnchor"`
+	FilterAnchor      float64  `json:"filterAnchor"`
+	CoarseAnchor      float64  `json:"coarseAnchor"`
+	MokaAnchor        *float64 `json:"mokaAnchor"`
+	FrenchPressAnchor *float64 `json:"frenchPressAnchor"`
+	BurrType          *string  `json:"burrType"`
+	CreatedAt         string   `json:"createdAt"`
 }
 type Brewer struct {
-	ID                int     `json:"id"`
-	Brand             string  `json:"brand"`
-	Model             string  `json:"model"`
-	BrewMethod        string  `json:"brewMethod"`
-	DefaultWaterTempF float64 `json:"defaultWaterTempF"`
+	ID            int     `json:"id"`
+	Brand         string  `json:"brand"`
+	Name          string  `json:"name"`
+	BrewMethod    string  `json:"brewMethod"`
+	MinBatchGrams float64 `json:"minBatchGrams"`
+	MaxBatchGrams float64 `json:"maxBatchGrams"`
+	CreatedAt     string  `json:"createdAt"`
 }
 type Filter struct {
-	ID          int    `json:"id"`
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Description string `json:"description"`
+	ID              int     `json:"id"`
+	Name            string  `json:"name"`
+	GrindAdjustment float64 `json:"grindAdjustment"`
+	CreatedAt       string  `json:"createdAt"`
+}
+type BrewMethod struct {
+	ID                  string  `json:"id"`
+	Label               string  `json:"label"`
+	DefaultRatio        float64 `json:"defaultRatio"`
+	DefaultGrindSetting float64 `json:"defaultGrindSetting"`
+	Description         string  `json:"description"`
 }
 type GrindersResult struct {
-	Grinders []Grinder `json:"grinders"`
-	Brands   []string  `json:"brands"`
-	Count    int       `json:"count"`
+	Grinders    []Grinder `json:"grinders"`
+	Brands      []string  `json:"brands"`
+	Count       int       `json:"count"`
+	MatchStatus string    `json:"matchStatus"`
 }
 type BrewersResult struct {
-	Brewers []Brewer `json:"brewers"`
-	Brands  []string `json:"brands"`
-	Count   int      `json:"count"`
+	Brewers     []Brewer `json:"brewers"`
+	Brands      []string `json:"brands"`
+	Count       int      `json:"count"`
+	MatchStatus string   `json:"matchStatus"`
 }
 type FiltersResult struct {
 	Filters []Filter `json:"filters"`
 	Count   int      `json:"count"`
 }
 type MethodsResult struct {
-	Methods []map[string]any `json:"methods"`
-	Count   int              `json:"count"`
+	Methods []BrewMethod `json:"methods"`
+	Count   int          `json:"count"`
 }
 
 type sourceBrands struct {
@@ -133,6 +151,13 @@ func (s *sourceBrands) UnmarshalJSON(data []byte) error {
 }
 
 func (c *Client) Grinders(ctx context.Context, brand string) (GrindersResult, error) {
+	return c.GrindersByName(ctx, brand, "")
+}
+
+// GrindersByName applies an exact, case-insensitive name filter after the
+// upstream brand query. BrewMark does not provide a name query parameter.
+func (c *Client) GrindersByName(ctx context.Context, brand, name string) (GrindersResult, error) {
+	name = strings.TrimSpace(name)
 	var source struct {
 		Grinders *json.RawMessage `json:"grinders"`
 		Brands   sourceBrands     `json:"brands"`
@@ -141,32 +166,80 @@ func (c *Client) Grinders(ctx context.Context, brand string) (GrindersResult, er
 		return GrindersResult{}, err
 	}
 	var items []Grinder
-	if !requiredArray(source.Grinders, &items) || !validGrinders(items) {
+	if !decodeValidatedArray(source.Grinders, &items, validGrinderJSON) || !validGrinders(items) {
 		return GrindersResult{}, invalidResponse()
 	}
 	brandValues, ok := brands(source.Brands, grinderBrands(items))
 	if !ok {
 		return GrindersResult{}, invalidResponse()
 	}
-	return GrindersResult{Grinders: items, Brands: brandValues, Count: len(items)}, nil
+	if name != "" {
+		items = filterGrindersByName(items, name)
+		brandValues = uniqueBrands(grinderBrands(items))
+	}
+	return GrindersResult{Grinders: items, Brands: brandValues, Count: len(items), MatchStatus: matchStatus(name, len(items))}, nil
 }
-func (c *Client) Brewers(ctx context.Context, brand, method string) (BrewersResult, error) {
+func (c *Client) Brewers(ctx context.Context, brand string) (BrewersResult, error) {
+	return c.BrewersByName(ctx, brand, "")
+}
+
+// BrewersByName applies an exact, case-insensitive name filter after the
+// upstream brand query. BrewMark does not provide a name query parameter.
+func (c *Client) BrewersByName(ctx context.Context, brand, name string) (BrewersResult, error) {
+	name = strings.TrimSpace(name)
 	var source struct {
 		Machines *json.RawMessage `json:"machines"`
 		Brands   sourceBrands     `json:"brands"`
 	}
-	if err := c.get(ctx, "/api/machines", url.Values{"brand": optional(brand), "brewMethod": optional(method)}, &source); err != nil {
+	if err := c.get(ctx, "/api/machines", url.Values{"brand": optional(brand)}, &source); err != nil {
 		return BrewersResult{}, err
 	}
 	var items []Brewer
-	if !requiredArray(source.Machines, &items) || !validBrewers(items) {
+	if !decodeValidatedArray(source.Machines, &items, validBrewerJSON) || !validBrewers(items) {
 		return BrewersResult{}, invalidResponse()
 	}
 	brandValues, ok := brands(source.Brands, brewerBrands(items))
 	if !ok {
 		return BrewersResult{}, invalidResponse()
 	}
-	return BrewersResult{Brewers: items, Brands: brandValues, Count: len(items)}, nil
+	if name != "" {
+		items = filterBrewersByName(items, name)
+		brandValues = uniqueBrands(brewerBrands(items))
+	}
+	return BrewersResult{Brewers: items, Brands: brandValues, Count: len(items), MatchStatus: matchStatus(name, len(items))}, nil
+}
+
+func filterGrindersByName(items []Grinder, name string) []Grinder {
+	filtered := make([]Grinder, 0, len(items))
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item.Name), name) {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+func filterBrewersByName(items []Brewer, name string) []Brewer {
+	filtered := make([]Brewer, 0, len(items))
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item.Name), name) {
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered
+}
+
+func matchStatus(name string, count int) string {
+	if name == "" {
+		return "not_requested"
+	}
+	if count == 0 {
+		return "empty"
+	}
+	if count == 1 {
+		return "exact"
+	}
+	return "ambiguous"
 }
 func (c *Client) Filters(ctx context.Context) (FiltersResult, error) {
 	var source struct {
@@ -176,13 +249,11 @@ func (c *Client) Filters(ctx context.Context) (FiltersResult, error) {
 		return FiltersResult{}, err
 	}
 	var items []Filter
-	if !requiredArray(source.Filters, &items) {
+	if !decodeValidatedArray(source.Filters, &items, validFilterJSON) {
 		return FiltersResult{}, invalidResponse()
 	}
-	for _, item := range items {
-		if item.ID == 0 || strings.TrimSpace(item.Name) == "" || strings.TrimSpace(item.Type) == "" {
-			return FiltersResult{}, invalidResponse()
-		}
+	if !validFilters(items) {
+		return FiltersResult{}, invalidResponse()
 	}
 	return FiltersResult{Filters: items, Count: len(items)}, nil
 }
@@ -193,23 +264,27 @@ func (c *Client) Methods(ctx context.Context) (MethodsResult, error) {
 	if err := c.get(ctx, "/api/brew-methods", nil, &source); err != nil {
 		return MethodsResult{}, err
 	}
-	var values []map[string]any
-	if source.Data == nil || !noDuplicateKeys(*source.Data) || !requiredArray(source.Data, &values) {
+	var values []BrewMethod
+	if source.Data == nil || !decodeValidatedArray(source.Data, &values, validMethodJSON) || !validMethods(values) {
 		return MethodsResult{}, invalidResponse()
-	}
-	for _, value := range values {
-		if len(value) == 0 || !hasScalar(value) {
-			return MethodsResult{}, invalidResponse()
-		}
 	}
 	return MethodsResult{Methods: values, Count: len(values)}, nil
 }
 
-func requiredArray[T any](raw *json.RawMessage, target *[]T) bool {
-	if raw == nil || string(*raw) == "null" || json.Unmarshal(*raw, target) != nil || *target == nil {
+func decodeValidatedArray[T any](raw *json.RawMessage, target *[]T, validate func(json.RawMessage) bool) bool {
+	if raw == nil || string(*raw) == "null" || !noDuplicateKeys(*raw) {
 		return false
 	}
-	return true
+	var values []json.RawMessage
+	if err := json.Unmarshal(*raw, &values); err != nil || values == nil {
+		return false
+	}
+	for _, value := range values {
+		if !validate(value) {
+			return false
+		}
+	}
+	return json.Unmarshal(*raw, target) == nil && *target != nil
 }
 
 func noDuplicateKeys(raw json.RawMessage) bool {
@@ -257,6 +332,101 @@ func readJSONValue(decoder *json.Decoder) bool {
 		}
 		_, err := decoder.Token()
 		return err == nil
+	default:
+		return false
+	}
+}
+
+func validGrinderJSON(raw json.RawMessage) bool {
+	return validObject(raw, map[string]valueKind{
+		"id":                integerValue,
+		"brand":             stringValue,
+		"name":              stringValue,
+		"minSetting":        numberValue,
+		"maxSetting":        numberValue,
+		"settingUnit":       stringValue,
+		"espressoAnchor":    numberValue,
+		"filterAnchor":      numberValue,
+		"coarseAnchor":      numberValue,
+		"mokaAnchor":        nullableNumberValue,
+		"frenchPressAnchor": nullableNumberValue,
+		"burrType":          nullableStringValue,
+		"createdAt":         stringValue,
+	})
+}
+
+func validBrewerJSON(raw json.RawMessage) bool {
+	return validObject(raw, map[string]valueKind{
+		"id":            integerValue,
+		"brand":         stringValue,
+		"name":          stringValue,
+		"brewMethod":    stringValue,
+		"minBatchGrams": numberValue,
+		"maxBatchGrams": numberValue,
+		"createdAt":     stringValue,
+	})
+}
+
+func validFilterJSON(raw json.RawMessage) bool {
+	return validObject(raw, map[string]valueKind{
+		"id":              integerValue,
+		"name":            stringValue,
+		"grindAdjustment": numberValue,
+		"createdAt":       stringValue,
+	})
+}
+
+func validMethodJSON(raw json.RawMessage) bool {
+	return validObject(raw, map[string]valueKind{
+		"id":                  stringValue,
+		"label":               stringValue,
+		"defaultRatio":        numberValue,
+		"defaultGrindSetting": numberValue,
+		"description":         stringValue,
+	})
+}
+
+type valueKind int
+
+const (
+	stringValue valueKind = iota
+	numberValue
+	integerValue
+	nullableStringValue
+	nullableNumberValue
+)
+
+func validObject(raw json.RawMessage, required map[string]valueKind) bool {
+	if !noDuplicateKeys(raw) {
+		return false
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return false
+	}
+	for name, kind := range required {
+		value, ok := fields[name]
+		if !ok || !validValue(value, kind) {
+			return false
+		}
+	}
+	return true
+}
+
+func validValue(raw json.RawMessage, kind valueKind) bool {
+	if string(raw) == "null" {
+		return kind == nullableStringValue || kind == nullableNumberValue
+	}
+	switch kind {
+	case stringValue, nullableStringValue:
+		var value string
+		return json.Unmarshal(raw, &value) == nil
+	case numberValue, nullableNumberValue:
+		var value float64
+		return json.Unmarshal(raw, &value) == nil
+	case integerValue:
+		var value int
+		return json.Unmarshal(raw, &value) == nil
 	default:
 		return false
 	}
@@ -348,7 +518,10 @@ func validRetryAfter(value string) string {
 }
 func validGrinders(items []Grinder) bool {
 	for _, v := range items {
-		if v.ID == 0 || strings.TrimSpace(v.Brand) == "" || strings.TrimSpace(v.Model) == "" {
+		if strings.TrimSpace(v.Brand) == "" || strings.TrimSpace(v.Name) == "" || strings.TrimSpace(v.SettingUnit) == "" || !validTimestamp(v.CreatedAt) {
+			return false
+		}
+		if v.BurrType != nil && strings.TrimSpace(*v.BurrType) == "" {
 			return false
 		}
 	}
@@ -356,11 +529,31 @@ func validGrinders(items []Grinder) bool {
 }
 func validBrewers(items []Brewer) bool {
 	for _, v := range items {
-		if v.ID == 0 || strings.TrimSpace(v.Brand) == "" || strings.TrimSpace(v.Model) == "" || strings.TrimSpace(v.BrewMethod) == "" {
+		if strings.TrimSpace(v.Brand) == "" || strings.TrimSpace(v.Name) == "" || strings.TrimSpace(v.BrewMethod) == "" || !validTimestamp(v.CreatedAt) {
 			return false
 		}
 	}
 	return true
+}
+func validFilters(items []Filter) bool {
+	for _, v := range items {
+		if strings.TrimSpace(v.Name) == "" || !validTimestamp(v.CreatedAt) {
+			return false
+		}
+	}
+	return true
+}
+func validMethods(items []BrewMethod) bool {
+	for _, v := range items {
+		if strings.TrimSpace(v.ID) == "" || strings.TrimSpace(v.Label) == "" {
+			return false
+		}
+	}
+	return true
+}
+func validTimestamp(value string) bool {
+	_, err := time.Parse(time.RFC3339, value)
+	return err == nil
 }
 func grinderBrands(items []Grinder) []string {
 	out := make([]string, 0, len(items))
@@ -375,6 +568,18 @@ func brewerBrands(items []Brewer) []string {
 		out = append(out, v.Brand)
 	}
 	return out
+}
+func uniqueBrands(values []string) []string {
+	seen := map[string]bool{}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	return result
 }
 func brands(source sourceBrands, fallback []string) ([]string, bool) {
 	values := fallback
@@ -396,13 +601,4 @@ func brands(source sourceBrands, fallback []string) ([]string, bool) {
 		}
 	}
 	return out, true
-}
-func hasScalar(value map[string]any) bool {
-	for _, item := range value {
-		switch item.(type) {
-		case string, float64:
-			return true
-		}
-	}
-	return false
 }

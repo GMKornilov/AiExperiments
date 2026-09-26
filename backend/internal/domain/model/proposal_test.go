@@ -38,6 +38,22 @@ func TestProposalInvariants(t *testing.T) {
 	if _, e := ApplyProposal(research, execution, false); e != nil {
 		t.Fatal("valid adjacent transition rejected", e)
 	}
+	for name, mutate := range map[string]func(*Proposal){
+		"wait-for-user": func(p *Proposal) { p.ExpectedAction = "user: продолжить" },
+		"execution-completed": func(p *Proposal) {
+			p.Plan[1].Stage = TaskStageExecution
+			p.Plan[1].Status = TaskPlanItemCompleted
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := execution
+			candidate.Plan = append([]TaskPlanItem{}, execution.Plan...)
+			mutate(&candidate)
+			if _, err := ApplyProposal(research, candidate, false); err == nil {
+				t.Fatal("premature research completion accepted")
+			}
+		})
+	}
 	execTask, _ := ApplyProposal(research, execution, false)
 	feedback := Proposal{Output: "Результат подготовлен", Stage: TaskStageUserFeedback, Status: TaskStatusActive, CurrentStep: "Получить отзыв", ExpectedAction: "user: оценить результат", Plan: []TaskPlanItem{{ID: "research", Title: "Собрать данные", Status: TaskPlanItemCompleted}, {ID: "result", Title: "Подготовить результат", Status: TaskPlanItemCompleted}}}
 	if _, e := ApplyProposal(execTask, feedback, false); e != nil {

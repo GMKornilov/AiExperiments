@@ -30,10 +30,35 @@ const expected = [
 ];
 if (tools.tools.map((tool) => tool.name).join(",") !== expected.join(",")) throw new Error("Unexpected MCP tool registry");
 
-const result = await call("tools/call", { name: "brewmark_list_grinders", arguments: {} });
+const result = await call("tools/call", {
+  name: "brewmark_list_grinders",
+  arguments: { brand: "Timemore", name: "C5 ESP Pro" },
+});
 if (result?.isError || !result?.structuredContent || typeof result.structuredContent !== "object") throw new Error("Grinders tool failed");
 const catalogue = result.structuredContent;
-if (!Array.isArray(catalogue.grinders) || catalogue.grinders.length !== 1 || catalogue.grinders[0]?.model !== "C40 MK4") {
+const grinder = catalogue.grinders?.[0];
+if (!Array.isArray(catalogue.grinders) || catalogue.grinders.length !== 1 || catalogue.matchStatus !== "exact" || grinder?.name !== "C5 ESP Pro" || grinder?.settingUnit !== "CLICKS" || grinder?.mokaAnchor !== 20 || grinder?.frenchPressAnchor !== null || grinder?.burrType !== "CONICAL" || !grinder?.createdAt) {
   throw new Error("Grinders tool returned an unexpected fixture");
 }
-console.log("MCP JSON-RPC smoke: 4 tools and grinders catalogue verified");
+
+const brewerResult = await call("tools/call", {
+  name: "brewmark_list_brewers",
+  arguments: { brand: "DeLonghi", name: "EC685" },
+});
+const brewer = brewerResult?.structuredContent?.brewers?.[0];
+if (brewerResult?.isError || brewerResult?.structuredContent?.matchStatus !== "exact" || brewer?.name !== "EC685" || brewer?.minBatchGrams !== 7 || brewer?.maxBatchGrams !== 18 || !brewer?.createdAt) {
+  throw new Error("Brewers tool returned an unexpected fixture");
+}
+
+const filtersResult = await call("tools/call", { name: "brewmark_list_filters", arguments: {} });
+const filter = filtersResult?.structuredContent?.filters?.[0];
+if (filtersResult?.isError || filter?.name !== "V60 Paper Filter 02" || filter?.grindAdjustment !== 1 || !filter?.createdAt) {
+  throw new Error("Filters tool returned an unexpected fixture");
+}
+
+const methodsResult = await call("tools/call", { name: "brewmark_list_brew_methods", arguments: {} });
+const method = methodsResult?.structuredContent?.methods?.[0];
+if (methodsResult?.isError || method?.id !== "V60" || method?.defaultRatio !== 16 || method?.defaultGrindSetting !== 48 || method?.description !== "Pour-over cone brewer.") {
+  throw new Error("Brew methods tool returned an unexpected fixture");
+}
+console.log("MCP JSON-RPC smoke: 4 tools and all catalogue schemas verified");

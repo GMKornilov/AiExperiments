@@ -314,12 +314,10 @@ func TestRepositoryContracts(t *testing.T) {
 				if !errors.Is(e, model.ErrValidation) {
 					t.Fatal("id collision accepted")
 				}
-				for i, stage := range []string{"execution", "user_feedback"} {
-					f.provider.set(proposal(stage), "", "")
-					c, e = f.input("дальше", fmt.Sprintf("next-%d", i), tid)
-					if e != nil {
-						t.Fatal(e)
-					}
+				f.provider.setSequence(proposalValues("execution", "Сведения об оборудовании собраны.", "agent: подобрать рецепт"), proposal("user_feedback"))
+				c, e = f.input("дальше", "next-0", tid)
+				if e != nil {
+					t.Fatal(e)
 				}
 				if c.Tasks[0].ValidationResult.Status != model.ValidationPassed || c.Tasks[0].ValidationResult.Summary == "" {
 					t.Fatalf("feedback persisted without server validation evidence: %+v", c.Tasks[0].ValidationResult)
@@ -717,7 +715,7 @@ func TestPauseResumeAcceptsAutonomousForwardStage(t *testing.T) {
 	if f.provider.count("task_step")-beforeTaskCalls != 3 || f.provider.count("memory_extractor")-beforeMemoryCalls != 1 {
 		t.Fatalf("unexpected resume calls: task=%d memory=%d", f.provider.count("task_step")-beforeTaskCalls, f.provider.count("memory_extractor")-beforeMemoryCalls)
 	}
-	if chat.Tasks[0].Stage != model.TaskStageUserFeedback || chat.Tasks[0].Status != model.TaskStatusActive || len(chat.Messages) != 6 || chat.Messages[len(chat.Messages)-1].Text != "Данные собраны\n\nРезультат подготовлен\n\nРезультат подготовлен" {
+	if chat.Tasks[0].Stage != model.TaskStageUserFeedback || chat.Tasks[0].Status != model.TaskStatusActive || len(chat.Messages) != 8 || chat.Messages[5].Role != "assistant" || chat.Messages[5].Text != "Данные собраны" || chat.Messages[6].Role != "assistant" || chat.Messages[6].Text != "Результат подготовлен" || chat.Messages[7].Role != "assistant" || chat.Messages[7].Text != "Результат подготовлен" {
 		t.Fatalf("unexpected resume result: %+v", chat)
 	}
 }
@@ -745,7 +743,7 @@ func TestAutonomousAgentStepsCommitOnce(t *testing.T) {
 			if f.provider.count("task_step")-beforeTaskCalls != 3 || f.provider.count("memory_extractor")-beforeMemoryCalls != 1 {
 				t.Fatalf("unexpected calls: task=%d memory=%d", f.provider.count("task_step")-beforeTaskCalls, f.provider.count("memory_extractor")-beforeMemoryCalls)
 			}
-			if chat.Tasks[0].Stage != model.TaskStageUserFeedback || len(chat.Messages) != 4 || chat.Messages[3].Text != "Исследование\n\nВыполнение\n\nИтог" {
+			if chat.Tasks[0].Stage != model.TaskStageUserFeedback || len(chat.Messages) != 6 || chat.Messages[3].Role != "assistant" || chat.Messages[3].Text != "Исследование" || chat.Messages[4].Role != "assistant" || chat.Messages[4].Text != "Выполнение" || chat.Messages[5].Role != "assistant" || chat.Messages[5].Text != "Итог" {
 				t.Fatalf("unexpected autonomous result: %+v", chat)
 			}
 			f.provider.mu.Lock()
@@ -777,7 +775,7 @@ func TestAutonomousAgentStepLimitRollsBack(t *testing.T) {
 		t.Fatalf("limit did not stop calls: task=%d memory=%d", f.provider.count("task_step")-beforeTaskCalls, f.provider.count("memory_extractor")-beforeMemoryCalls)
 	}
 	after := f.stored()
-	if len(after.Messages) != len(before.Messages)+2 || !strings.Contains(limited.Messages[len(limited.Messages)-1].Text, "не смог безопасно") || after.Tasks[0].Stage != before.Tasks[0].Stage || !reflect.DeepEqual(after.Tasks[0].Plan, before.Tasks[0].Plan) {
+	if len(after.Messages) != len(before.Messages)+2 || !strings.Contains(limited.Messages[len(limited.Messages)-1].Text, "не смог завершить автономный шаг") || after.Tasks[0].Stage != before.Tasks[0].Stage || !reflect.DeepEqual(after.Tasks[0].Plan, before.Tasks[0].Plan) {
 		t.Fatal("autonomous limit published partial state")
 	}
 }
@@ -790,8 +788,11 @@ func TestResumeLostFinalResponseReplaysCompletedTask(t *testing.T) {
 			f := setup(t, kind)
 			var chat model.Chat
 			var err error
-			for index, stage := range []string{"clarify_input", "research_input_data", "execution", "user_feedback"} {
+			for index, stage := range []string{"clarify_input", "research_input_data", "execution"} {
 				f.provider.set(proposal(stage), "", "")
+				if stage == "execution" {
+					f.provider.setSequence(proposalValues("execution", "Сведения об оборудовании собраны.", "agent: подобрать рецепт"), proposal("user_feedback"))
+				}
 				tid := ""
 				if len(chat.Tasks) > 0 {
 					tid = chat.Tasks[0].ID
