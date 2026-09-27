@@ -45,6 +45,7 @@ type provider struct {
 	mu           sync.Mutex
 	calls        []string
 	messages     map[string][]completion.Message
+	taskMessages [][]completion.Message
 	raw          string
 	raws         []string
 	fail         string
@@ -57,6 +58,9 @@ type provider struct {
 func (p *provider) Complete(ctx context.Context, purpose string, m []completion.Message) (string, error) {
 	p.mu.Lock()
 	p.calls = append(p.calls, purpose)
+	if purpose == "task_step" {
+		p.taskMessages = append(p.taskMessages, append([]completion.Message{}, m...))
+	}
 	if p.messages == nil {
 		p.messages = map[string][]completion.Message{}
 	}
@@ -203,7 +207,7 @@ func setup(t *testing.T, kind string) *fixture {
 	f.ws = workspace.New(f.state, f.state, id, time.Now)
 	allow := invariant.Set{}
 	f.chat = conversation.New(f.state, f.provider, extractor, f.titles, settings, id, time.Now, allow)
-	f.tasks = taskflow.New(f.state, f.provider, extractor, extractjson.ProposalDecoder{}, model.TaskRouter{}, f.titles, settings, id, time.Now, allow)
+	f.tasks = taskflow.New(f.state, f.provider, extractor, extractjson.ProposalDecoder{}, extractjson.NewTaskPromptBuilder(), model.TaskRouter{}, f.titles, settings, id, time.Now, allow)
 	p, err := f.ws.CreateProject("s", "Project")
 	if err != nil {
 		t.Fatal(err)

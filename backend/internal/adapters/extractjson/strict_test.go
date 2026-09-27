@@ -1,6 +1,7 @@
 package extractjson
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -10,12 +11,47 @@ import (
 
 func TestProposalInstructionUsesBrewMarkNameLookup(t *testing.T) {
 	instruction := (ProposalDecoder{}).Instruction(model.Task{Stage: model.TaskStageResearchInputData}, false, nil, 2)
-	if !strings.Contains(instruction, "BrewMark lookup с name и brand") {
+	if !strings.Contains(instruction, "lookup с name и brand") {
 		t.Fatalf("BrewMark lookup contract is missing name and brand: %q", instruction)
 	}
 	obsoleteArgument := "mo" + "del"
 	if strings.Contains(instruction, "BrewMark lookup с "+obsoleteArgument) || strings.Contains(instruction, obsoleteArgument+"=") {
 		t.Fatalf("instruction contains obsolete model input contract: %q", instruction)
+	}
+}
+
+func TestPromptBuilderUsesOnlyCurrentStageStrategy(t *testing.T) {
+	builder := NewTaskPromptBuilder()
+	stageRules := map[model.TaskStage]string{
+		model.TaskStageClarifyInput:      "ЭТАП clarify_input",
+		model.TaskStageResearchInputData: "ЭТАП research_input_data",
+		model.TaskStageExecution:         "ЭТАП execution",
+		model.TaskStageUserFeedback:      "ЭТАП user_feedback",
+	}
+	for stage, ownRule := range stageRules {
+		t.Run(string(stage), func(t *testing.T) {
+			prompt, err := builder.Build(model.Task{Stage: stage}, false, nil, 2)
+			if err != nil || !strings.Contains(prompt, ownRule) {
+				t.Fatalf("stage=%s err=%v prompt=%q", stage, err, prompt)
+			}
+			for otherStage, otherRule := range stageRules {
+				if otherStage != stage && strings.Contains(prompt, otherRule) {
+					t.Fatalf("stage=%s leaked rule from %s: %q", stage, otherStage, prompt)
+				}
+			}
+			for _, common := range []string{"ФОРМАТ PROPOSAL/REPAIR/SYNTHESIS СТРОГИЙ", `"stage":"`, "TASK_STATE:"} {
+				if !strings.Contains(prompt, common) {
+					t.Fatalf("stage=%s misses common contract %q", stage, common)
+				}
+			}
+		})
+	}
+}
+
+func TestPromptBuilderRejectsUnknownStage(t *testing.T) {
+	_, err := NewTaskPromptBuilder().Build(model.Task{Stage: model.TaskStage("unknown")}, false, nil, 1)
+	if !errors.Is(err, ErrUnknownTaskStage) {
+		t.Fatalf("err=%v", err)
 	}
 }
 
@@ -26,12 +62,27 @@ func TestProposalInstructionPreservesCatalogHandoffForExecution(t *testing.T) {
 		"без округления",
 		"minSetting, maxSetting, settingUnit",
 		"относящийся к способу anchor",
-		"exact match",
-		"не заменяй доступную числовую опору общим советом",
-		"стартовая каталожная настройка",
+		"стартовые каталожные опоры",
 	} {
 		if !strings.Contains(instruction, required) {
 			t.Fatalf("catalog handoff contract is missing %q: %q", required, instruction)
+		}
+	}
+}
+
+func TestExecutionPromptPreservesExactCatalogAnchor(t *testing.T) {
+	prompt, err := NewTaskPromptBuilder().Build(model.Task{Stage: model.TaskStageExecution}, false, []string{"catalog handoff"}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"используй exact match",
+		"не заменяй доступную числовую опору общим советом настроить по времени",
+		"финальный output должен быть понятен вместе с prior_outputs",
+		"ровно один current, согласованный с current_plan_item",
+	} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("execution prompt misses %q: %q", required, prompt)
 		}
 	}
 }
@@ -43,18 +94,16 @@ func TestProposalInstructionContinuesAnsweredClarification(t *testing.T) {
 		"первый символ текстового ответа — {, последний — }",
 		"Markdown fences",
 		"XML, DSML или текстовый tool-call syntax",
-		"Единственное исключение: в первом research-вызове",
-		"только native tool call(s), без текста, JSON, Markdown или DSML",
-		"после tool results снова верни один строгий JSON object",
-		"TASK_STATE.stage=clarify_input и TASK_STATE.first=false",
+		"ЭТАП clarify_input",
+		"TASK_STATE.first=false",
 		"последним assistant clarification и историей",
 		"включая нумерованный список",
-		"ОБЯЗАТЕЛЬНО перейди ровно в research_input_data",
+		"перейди ровно в research_input_data",
 		"единственный допустимый следующий stage — research_input_data",
-		"не переходи в execution в этом случае",
+		"не переходи в execution",
 		"plan непустой",
 		"Не задавай повторный clarify-вопрос",
-		"конкретный недостающий gap",
+		"конкретно названном gap",
 		"семантическое решение task LLM",
 	} {
 		if !strings.Contains(instruction, required) {
@@ -64,8 +113,8 @@ func TestProposalInstructionContinuesAnsweredClarification(t *testing.T) {
 	if !strings.Contains(instruction, `"first":false`) {
 		t.Fatalf("instruction must include non-first state: %q", instruction)
 	}
-	if !strings.Contains(instruction, "Правило «конкретная модель не названа» применяется только в этом research-этапе") || !strings.Contains(instruction, "никогда не разрешает пропустить research") {
-		t.Fatalf("instruction must keep no-model branch inside research: %q", instruction)
+	if strings.Contains(instruction, "BrewMark lookup") || strings.Contains(instruction, "ЭТАП research_input_data") {
+		t.Fatalf("clarify prompt leaked research rules: %q", instruction)
 	}
 }
 

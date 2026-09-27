@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -41,12 +42,12 @@ func (c *researchTaskClient) CompleteWithTools(_ context.Context, _ string, mess
 }
 
 type researchMCP struct {
-	calls  int
+	calls  atomic.Int32
 	result json.RawMessage
 }
 
 func (m *researchMCP) Call(context.Context, string, json.RawMessage, string) (json.RawMessage, error) {
-	m.calls++
+	m.calls.Add(1)
 	return m.result, nil
 }
 
@@ -71,7 +72,7 @@ func prepareResearchTask(t *testing.T) (*fixture, *controlledPipeline, string) {
 
 func installResearchClient(f *fixture, p invariant.Pipeline, results []completion.Result, mcp *researchMCP) *researchTaskClient {
 	client := &researchTaskClient{base: f.provider, results: results}
-	f.tasks = taskflow.New(f.state, client, extractjson.NewExtractor(f.provider, "MEMORY"), extractjson.ProposalDecoder{}, model.TaskRouter{}, f.titles, conversation.Settings{Prompt: "BASE", Window: 3}, func() string { return fmt.Sprintf("research-id-%d", f.sequence.Add(1)) }, time.Now, p, mcp)
+	f.tasks = taskflow.New(f.state, client, extractjson.NewExtractor(f.provider, "MEMORY"), extractjson.ProposalDecoder{}, extractjson.NewTaskPromptBuilder(), model.TaskRouter{}, f.titles, conversation.Settings{Prompt: "BASE", Window: 3}, func() string { return fmt.Sprintf("research-id-%d", f.sequence.Add(1)) }, time.Now, p, mcp)
 	return client
 }
 
@@ -110,8 +111,8 @@ func TestResearchCatalogCallContinuesBeforeExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mcp.calls != 1 || len(client.requests) != 2 || len(client.tools[0]) != 4 || len(client.tools[1]) != 0 || f.provider.count("task_step") != beforePlain+1 {
-		t.Fatalf("calls: mcp=%d research=%d execution=%d", mcp.calls, len(client.requests), f.provider.count("task_step")-beforePlain)
+	if mcp.calls.Load() != 1 || len(client.requests) != 2 || len(client.tools[0]) != 4 || len(client.tools[1]) != 0 || f.provider.count("task_step") != beforePlain+1 {
+		t.Fatalf("calls: mcp=%d research=%d execution=%d", mcp.calls.Load(), len(client.requests), f.provider.count("task_step")-beforePlain)
 	}
 	continuation := client.requests[1]
 	if len(continuation) < 2 || continuation[len(continuation)-2].Role != "assistant" || len(continuation[len(continuation)-2].ToolCalls) != 1 || continuation[len(continuation)-1].Role != "tool" || continuation[len(continuation)-1].ToolCallID != toolCall.ID || continuation[len(continuation)-1].Content != string(mcp.result) {
@@ -334,7 +335,7 @@ func taskWithPipeline(t *testing.T, p invariant.Pipeline, raws ...string) *fixtu
 	f.provider.set("", "", "")
 	f.provider.raws = raws
 	ex := extractjson.NewExtractor(f.provider, "MEMORY")
-	f.tasks = taskflow.New(f.state, f.provider, ex, extractjson.ProposalDecoder{}, model.TaskRouter{}, f.titles, conversation.Settings{Prompt: "BASE", Window: 3}, func() string { return "test-id" }, time.Now, p)
+	f.tasks = taskflow.New(f.state, f.provider, ex, extractjson.ProposalDecoder{}, extractjson.NewTaskPromptBuilder(), model.TaskRouter{}, f.titles, conversation.Settings{Prompt: "BASE", Window: 3}, func() string { return "test-id" }, time.Now, p)
 	return f
 }
 func violations() []invariant.Violation {
@@ -356,7 +357,7 @@ func TestServicesRequireInvariantPipeline(t *testing.T) {
 		conversation.New(f.state, f.provider, extractjson.NewExtractor(f.provider, "MEMORY"), f.titles, conversation.Settings{}, func() string { return "id" }, time.Now, nil)
 	})
 	assertPanic(func() {
-		taskflow.New(f.state, f.provider, extractjson.NewExtractor(f.provider, "MEMORY"), extractjson.ProposalDecoder{}, model.TaskRouter{}, f.titles, conversation.Settings{}, func() string { return "id" }, time.Now, nil)
+		taskflow.New(f.state, f.provider, extractjson.NewExtractor(f.provider, "MEMORY"), extractjson.ProposalDecoder{}, extractjson.NewTaskPromptBuilder(), model.TaskRouter{}, f.titles, conversation.Settings{}, func() string { return "id" }, time.Now, nil)
 	})
 }
 
@@ -482,6 +483,9 @@ func TestTaskInvariantPostRepairAndTechnicalFailure(t *testing.T) {
 			t.Fatalf("repair missed aggregated violation %q: %s", invariantID, repairPrompt)
 		}
 	}
+	if !strings.Contains(repairPrompt, "ЭТАП clarify_input") || strings.Contains(repairPrompt, "ЭТАП research_input_data") || strings.Contains(repairPrompt, "ЭТАП execution") {
+		t.Fatalf("repair did not retain the confirmed stage strategy: %q", repairPrompt)
+	}
 	p2 := &controlledPipeline{err: &completion.Error{Category: "invariant_validation", Cause: errors.New("down")}, errorSubject: invariant.TaskProposal}
 	f2 := taskWithPipeline(t, p2, proposal("clarify_input"))
 	_, err = f2.input("help", "error", "")
@@ -490,6 +494,28 @@ func TestTaskInvariantPostRepairAndTechnicalFailure(t *testing.T) {
 	}
 	if got := f2.state.Snapshot().Chat("s", f2.pid, f2.cid); len(got.Messages) != 0 || len(got.Tasks) != 0 || len(got.Operations) != 0 || len(got.TaskInputs) != 0 || len(got.TaskOperationIDs) != 0 {
 		t.Fatalf("%+v", got)
+	}
+}
+
+func TestUnknownTaskStageIsRejectedBeforeProviderCall(t *testing.T) {
+	f := taskWithPipeline(t, &controlledPipeline{}, proposal("clarify_input"))
+	created, err := f.input("подбери эспрессо", "create", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskID := created.Tasks[0].ID
+	if err := f.state.Update(func(root *model.State) error {
+		root.Chat("s", f.pid, f.cid).Tasks[taskID].Stage = model.TaskStage("unknown")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := f.provider.count("task_step")
+	if _, err := f.input("продолжай", "unknown-stage", taskID); completion.Category(err) != "invalid_response" {
+		t.Fatalf("err=%v", err)
+	}
+	if got := f.provider.count("task_step"); got != before {
+		t.Fatalf("provider was called for unknown stage: before=%d after=%d", before, got)
 	}
 }
 
@@ -537,7 +563,24 @@ func TestTaskAutonomousOutputsArePersistedSeparatelyInAcceptanceOrder(t *testing
 	if strings.Contains(chat.Messages[3].Text, executionOutput) || strings.Contains(chat.Messages[3].Text, feedbackOutput) {
 		t.Fatalf("autonomous outputs were joined: %+v", chat.Messages[3])
 	}
-
+	f.provider.mu.Lock()
+	prompts := append([][]completion.Message{}, f.provider.taskMessages...)
+	f.provider.mu.Unlock()
+	if len(prompts) != 4 {
+		t.Fatalf("task prompts=%d", len(prompts))
+	}
+	wantStages := []string{"ЭТАП clarify_input", "ЭТАП clarify_input", "ЭТАП research_input_data", "ЭТАП execution"}
+	for index, stageRule := range wantStages {
+		prompt := prompts[index][0].Content
+		if !strings.Contains(prompt, stageRule) {
+			t.Fatalf("prompt[%d] misses %q: %q", index, stageRule, prompt)
+		}
+		for otherIndex, otherRule := range wantStages {
+			if otherIndex != index && otherRule != stageRule && strings.Contains(prompt, otherRule) {
+				t.Fatalf("prompt[%d] leaked %q: %q", index, otherRule, prompt)
+			}
+		}
+	}
 	stored := f.stored()
 	if !reflect.DeepEqual(stored.Messages, chat.Messages) {
 		t.Fatalf("stored messages differ from returned chat: stored=%+v returned=%+v", stored.Messages, chat.Messages)
@@ -562,6 +605,16 @@ func TestTaskAutonomousOutputsArePersistedSeparatelyInAcceptanceOrder(t *testing
 	}
 	if got := f.provider.count("memory_extractor"); got != 2 {
 		t.Fatalf("memory extractor calls=%d, want 2", got)
+	}
+	f.provider.set(proposal("user_feedback"), "", "")
+	if _, err := f.input("спасибо", "feedback", taskID); err != nil {
+		t.Fatal(err)
+	}
+	f.provider.mu.Lock()
+	feedbackPrompt := f.provider.taskMessages[len(f.provider.taskMessages)-1][0].Content
+	f.provider.mu.Unlock()
+	if !strings.Contains(feedbackPrompt, "ЭТАП user_feedback") || strings.Contains(feedbackPrompt, "ЭТАП execution") {
+		t.Fatalf("feedback prompt has wrong strategy: %q", feedbackPrompt)
 	}
 }
 
@@ -652,7 +705,7 @@ func TestTaskExhaustionRestoresExistingTaskAndBookkeeping(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &controlledPipeline{post: violations()}
-	f.tasks = taskflow.New(f.state, f.provider, extractjson.NewExtractor(f.provider, "MEMORY"), extractjson.ProposalDecoder{}, model.TaskRouter{}, f.titles, conversation.Settings{Prompt: "BASE", Window: 3}, func() string { return "exhaust-id" }, time.Now, p)
+	f.tasks = taskflow.New(f.state, f.provider, extractjson.NewExtractor(f.provider, "MEMORY"), extractjson.ProposalDecoder{}, extractjson.NewTaskPromptBuilder(), model.TaskRouter{}, f.titles, conversation.Settings{Prompt: "BASE", Window: 3}, func() string { return "exhaust-id" }, time.Now, p)
 	f.provider.setSequence(proposal("research_input_data"), proposal("research_input_data"), proposal("research_input_data"))
 	before := f.state.Snapshot().Chat("s", f.pid, f.cid)
 	chat, err := f.input("continue", "exhaust-existing", taskID)

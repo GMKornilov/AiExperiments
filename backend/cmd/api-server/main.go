@@ -84,7 +84,7 @@ func main() {
 	}
 	workspaceService := workspace.New(store, store, id, time.Now)
 	conversationService := conversation.New(store, client, extractor, titles, settings, id, time.Now, invariants)
-	tasks := taskflow.New(store, client, extractor, extractjson.ProposalDecoder{}, model.TaskRouter{}, titles, settings, id, time.Now, invariants, mcpToolsClient)
+	tasks := taskflow.New(store, client, extractor, extractjson.ProposalDecoder{}, extractjson.NewTaskPromptBuilder(), model.TaskRouter{}, titles, settings, id, time.Now, invariants, mcpToolsClient)
 	closeStore := func() { store.Close(); titles.Close() }
 	defer closeStore()
 	journal := observability.NewJournal(cfg.LogTextPayloads, logger)

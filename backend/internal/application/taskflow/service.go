@@ -38,7 +38,13 @@ type Extractor interface {
 }
 type ProposalCodec interface {
 	Decode(string) (model.Proposal, error)
-	Instruction(model.Task, bool, []string, int) string
+}
+
+// PromptBuilder creates a task-candidate instruction from the confirmed task
+// snapshot. Implementations must reject unknown stages instead of falling back
+// to a prompt for another stage.
+type PromptBuilder interface {
+	Build(model.Task, bool, []string, int) (string, error)
 }
 type Router interface {
 	Match([]model.Task, string) []model.Task
@@ -51,6 +57,7 @@ type Service struct {
 	client    CompletionClient
 	extractor Extractor
 	codec     ProposalCodec
+	prompts   PromptBuilder
 	router    Router
 	titles    TitleStarter
 	settings  conversation.Settings
@@ -60,11 +67,14 @@ type Service struct {
 	mcp       MCPCaller
 }
 
-func New(state TaskState, client CompletionClient, extractor Extractor, codec ProposalCodec, router Router, titles TitleStarter, settings conversation.Settings, id func() string, now func() time.Time, validator invariant.Pipeline, callers ...MCPCaller) *Service {
+func New(state TaskState, client CompletionClient, extractor Extractor, codec ProposalCodec, prompts PromptBuilder, router Router, titles TitleStarter, settings conversation.Settings, id func() string, now func() time.Time, validator invariant.Pipeline, callers ...MCPCaller) *Service {
 	if validator == nil {
 		panic("task invariant pipeline is required")
 	}
-	service := &Service{state: state, client: client, extractor: extractor, codec: codec, router: router, titles: titles, settings: settings, id: id, now: now, validator: validator}
+	if prompts == nil {
+		panic("task prompt builder is required")
+	}
+	service := &Service{state: state, client: client, extractor: extractor, codec: codec, prompts: prompts, router: router, titles: titles, settings: settings, id: id, now: now, validator: validator}
 	if len(callers) > 0 {
 		service.mcp = callers[0]
 	}
@@ -237,7 +247,12 @@ func (s *Service) TaskInput(ctx context.Context, sid, pid, cid, input, candidate
 			researchAttempt.Outcome = "no_tool"
 		}
 		messages := append([]completion.Message{}, baseMessages...)
-		messages[0].Content += "\n\n" + s.codec.Instruction(next, first && step == 0, outputs, maxAutonomousSteps-step)
+		instruction, instructionErr := s.prompts.Build(next, first && step == 0, outputs, maxAutonomousSteps-step)
+		if instructionErr != nil {
+			attemptErr = completion.Invalid()
+			break
+		}
+		messages[0].Content += "\n\n" + instruction
 		if next.Stage == model.TaskStageResearchInputData && researchToolUsed {
 			messages[0].Content += researchAttemptInstruction(researchAttempt)
 		}
