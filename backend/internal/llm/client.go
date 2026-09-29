@@ -19,8 +19,28 @@ const maxResponseBytes = 1 << 20
 
 // Message is one ordered OpenAI-compatible chat message.
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+}
+
+type ToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+type Tool struct {
+	Type     string `json:"type"`
+	Function struct {
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		Parameters  json.RawMessage `json:"parameters"`
+	} `json:"function"`
 }
 
 // ErrorKind is a safe category for one upstream attempt.
@@ -59,6 +79,13 @@ type chatRequest struct {
 	Model       string    `json:"model"`
 	Messages    []Message `json:"messages"`
 	Temperature float64   `json:"temperature"`
+	Tools       []Tool    `json:"tools,omitempty"`
+}
+
+// ChatCompletionWithTools makes one OpenAI-compatible request. It accepts a
+// text answer or a tool-call answer; callers enforce their stage policy.
+func (c *Client) ChatCompletionWithTools(ctx context.Context, model string, messages []Message, temperature float64, tools []Tool) (Completion, []ToolCall, error) {
+	return c.chatCompletion(ctx, model, messages, temperature, tools)
 }
 
 type chatResponse struct {
@@ -73,6 +100,11 @@ func (c *Client) ChatMessages(ctx context.Context, model string, messages []Mess
 	return result.Text, err
 }
 func (c *Client) ChatCompletion(ctx context.Context, model string, messages []Message, temperature float64) (completion Completion, completionErr error) {
+	completion, _, completionErr = c.chatCompletion(ctx, model, messages, temperature, nil)
+	return completion, completionErr
+}
+
+func (c *Client) chatCompletion(ctx context.Context, model string, messages []Message, temperature float64, tools []Tool) (completion Completion, toolCalls []ToolCall, completionErr error) {
 	started := time.Now()
 	status := 0
 	callID := RequestID(WithRequestID(ctx, ""))
@@ -96,23 +128,29 @@ func (c *Client) ChatCompletion(ctx context.Context, model string, messages []Me
 		slog.Warn("llm_request_failed", "correlation_id", RequestID(ctx), "attempt_id", AttemptID(ctx), "http_status", status, "error_category", category, "result", "failure", "duration_ms", time.Since(started).Milliseconds())
 	}()
 	if strings.TrimSpace(c.baseURL) == "" || strings.TrimSpace(c.apiKey) == "" || strings.TrimSpace(model) == "" || len(messages) == 0 {
-		return Completion{}, &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid completion configuration")}
+		return Completion{}, nil, &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid completion configuration")}
 	}
 	if math.IsNaN(temperature) || math.IsInf(temperature, 0) || temperature < 0 || temperature > 2 {
-		return Completion{}, &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid temperature")}
+		return Completion{}, nil, &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid temperature")}
 	}
 	for _, message := range messages {
-		if (message.Role != "system" && message.Role != "user" && message.Role != "assistant") || strings.TrimSpace(message.Content) == "" {
-			return Completion{}, &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid message")}
+		if message.Role != "system" && message.Role != "user" && message.Role != "assistant" && message.Role != "tool" {
+			return Completion{}, nil, &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid message")}
+		}
+		if message.Role == "tool" && (message.ToolCallID == "" || strings.TrimSpace(message.Content) == "") {
+			return Completion{}, nil, &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid message")}
+		}
+		if message.Role != "tool" && strings.TrimSpace(message.Content) == "" && len(message.ToolCalls) == 0 {
+			return Completion{}, nil, &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid message")}
 		}
 	}
-	body, err := json.Marshal(chatRequest{Model: model, Messages: messages, Temperature: temperature})
+	body, err := json.Marshal(chatRequest{Model: model, Messages: messages, Temperature: temperature, Tools: tools})
 	if err != nil {
-		return Completion{}, &Error{Kind: ErrorInvalidResponse, err: err}
+		return Completion{}, nil, &Error{Kind: ErrorInvalidResponse, err: err}
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return Completion{}, &Error{Kind: ErrorInvalidResponse, err: err}
+		return Completion{}, nil, &Error{Kind: ErrorInvalidResponse, err: err}
 	}
 	request.Header.Set("Authorization", "Bearer "+c.apiKey)
 	request.Header.Set("Content-Type", "application/json")
@@ -121,7 +159,7 @@ func (c *Client) ChatCompletion(ctx context.Context, model string, messages []Me
 	sent = true
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return Completion{}, &Error{Kind: errorKind(err), err: err}
+		return Completion{}, nil, &Error{Kind: errorKind(err), err: err}
 	}
 	defer response.Body.Close()
 	status = response.StatusCode
@@ -132,17 +170,17 @@ func (c *Client) ChatCompletion(ctx context.Context, model string, messages []Me
 	}
 	responsePayload = string(data)
 	if err != nil {
-		return Completion{}, &Error{Kind: errorKind(err), err: err}
+		return Completion{}, nil, &Error{Kind: errorKind(err), err: err}
 	}
 	if truncated {
-		return Completion{}, &Error{Kind: ErrorInvalidResponse, err: errors.New("response exceeds limit")}
+		return Completion{}, nil, &Error{Kind: ErrorInvalidResponse, err: errors.New("response exceeds limit")}
 	}
 	if !strings.HasPrefix(strings.ToLower(response.Header.Get("Content-Type")), "application/json") {
 		kind := ErrorInvalidResponse
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 			kind = ErrorProvider
 		}
-		return Completion{}, &Error{Kind: kind, err: errors.New("response is not JSON")}
+		return Completion{}, nil, &Error{Kind: kind, err: errors.New("response is not JSON")}
 	}
 	var envelope struct {
 		Usage json.RawMessage `json:"usage"`
@@ -159,14 +197,17 @@ func (c *Client) ChatCompletion(ctx context.Context, model string, messages []Me
 		if isContextLimit(envelope.Error.Code, envelope.Error.Type, envelope.Error.Message) {
 			kind = ErrorContextLimit
 		}
-		return result, &Error{Kind: kind, err: fmt.Errorf("provider returned HTTP %d", response.StatusCode)}
+		return result, nil, &Error{Kind: kind, err: fmt.Errorf("provider returned HTTP %d", response.StatusCode)}
 	}
 	var decoded chatResponse
-	if err := json.Unmarshal(data, &decoded); err != nil || len(decoded.Choices) == 0 || strings.TrimSpace(decoded.Choices[0].Message.Content) == "" {
-		return result, &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid completion response")}
+	if err := json.Unmarshal(data, &decoded); err != nil || len(decoded.Choices) == 0 {
+		return result, nil, &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid completion response")}
 	}
 	result.Text = decoded.Choices[0].Message.Content
-	return result, nil
+	if strings.TrimSpace(result.Text) == "" && len(decoded.Choices[0].Message.ToolCalls) == 0 {
+		return result, nil, &Error{Kind: ErrorInvalidResponse, err: errors.New("invalid completion response")}
+	}
+	return result, decoded.Choices[0].Message.ToolCalls, nil
 }
 
 func isContextLimit(code, errorType, message string) bool {

@@ -3,11 +3,14 @@ package statejson
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"aichallenge/week_1/task_1/internal/adapters/extractjson"
+	"aichallenge/week_1/task_1/internal/application/state"
 	"aichallenge/week_1/task_1/internal/domain/model"
 )
 
@@ -73,6 +76,74 @@ func TestLegacyFeedbackGetsNeutralValidationMarker(t *testing.T) {
 	task := restored.Chat("s", "p", "c").Tasks["t"]
 	if task.ValidationResult.Status != model.ValidationNotValidated || !task.ValidationResult.LegacyUnvalidated {
 		t.Fatalf("legacy validation=%+v", task.ValidationResult)
+	}
+}
+
+func TestV8EquipmentMigrationArchivesExactSourceAndWritesV9(t *testing.T) {
+	data := `{"version":8,"sessions":{"s":{"global_facts":["grinder"],"projects":{"p":{"id":"p","title":"Project","project_facts":["beans"],"chats":{"c":{"id":"c","title":"Coffee","title_status":"success","messages":[{"id":"m","role":"user","text":"beans","status":"success","created_at":"2026-01-01T00:00:00Z"}],"tasks":{"t":{"id":"t","title":"Task","description":"d","stage":"clarify_input","current_step":"Collect equipment","expected_action":"user: confirm equipment","status":"active","plan":[],"equipment_confirmed":false,"equipment_context":{"intent":"recipe","status":"collecting","items":[]},"validation_result":{"status":"not_validated"},"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}}}}}},"profiles":{},"active_profile_id":"barista"}}}`
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := migrateV8([]byte(data))
+	if err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	var decoded envelope
+	if err := extractjson.Decode(migrated, &decoded); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	precheck := toState(diskState{Sessions: decoded.Sessions})
+	normalizeV8Clarifications(&precheck)
+	if err := normalize(&precheck); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	if err := validate(precheck); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	_, restored, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := restored.Chat("s", "p", "c").Tasks["t"]
+	if task.Stage != model.TaskStageClarifyInput || task.CurrentStep != model.ClarificationStep || task.ExpectedAction != model.ClarificationExpectedAction || len(task.Plan) != 0 || task.CurrentPlanItem != "" || restored.Sessions["s"].GlobalFacts[0] != "grinder" || restored.Project("s", "p").Facts[0] != "beans" || restored.Chat("s", "p", "c").Messages[0].Text != "beans" {
+		t.Fatalf("state was not preserved: %#v", task)
+	}
+	entries, err := filepath.Glob(path + ".backup-*")
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("archives=%v err=%v", entries, err)
+	}
+	archive, err := os.ReadFile(entries[0])
+	if err != nil || string(archive) != data {
+		t.Fatalf("archive differs: %v %q", err, archive)
+	}
+	written, err := os.ReadFile(path)
+	if err != nil || !bytes.Contains(written, []byte(`"version": 9`)) || bytes.Contains(written, []byte("equipment_context")) || bytes.Contains(written, []byte("equipment_confirmed")) {
+		t.Fatalf("v9 rewrite invalid: %v %s", err, written)
+	}
+}
+
+func TestV8MigrationRejectsMalformedSourceWithoutWriting(t *testing.T) {
+	valid := `{"version":8,"sessions":{"s":{"global_facts":[],"projects":{"p":{"id":"p","title":"P","project_facts":[],"chats":{"c":{"id":"c","title":"C","title_status":"success","messages":[],"tasks":{"t":{"id":"t","title":"T","description":"d","stage":"clarify_input","current_step":"x","expected_action":"user: x","status":"active","plan":[],"equipment_context":{"status":"collecting"},"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}}}}}},"profiles":{},"active_profile_id":"barista"}}}`
+	for _, data := range []string{
+		strings.Replace(valid, `"equipment_context":{"status":"collecting"}`, `"equipment_context":"wrong"`, 1),
+		strings.Replace(valid, `"version":8`, `"version":8,"version":8`, 1),
+	} {
+		path := filepath.Join(t.TempDir(), "state.json")
+		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := Open(path); !errors.Is(err, state.ErrStorage) {
+			t.Fatalf("error=%v", err)
+		}
+		after, _ := os.ReadFile(path)
+		if string(after) != data {
+			t.Fatal("malformed v8 was rewritten")
+		}
+		archives, _ := filepath.Glob(path + ".backup-*")
+		if len(archives) != 0 {
+			t.Fatal("malformed v8 was archived")
+		}
 	}
 }
 func TestHistoricalResetArchivesIndexAndDialogs(t *testing.T) {

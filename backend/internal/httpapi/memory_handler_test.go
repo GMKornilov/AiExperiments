@@ -295,7 +295,7 @@ func newActiveTestStore(t *testing.T, provider agent.Provider, snap agent.Dialog
 	extractor := extractjson.NewExtractor(client, snap.Memory.Snapshot.SystemPrompt)
 	settings := conversation.Settings{Prompt: snap.Chat.SystemPrompt, Window: snap.ContextWindowMessages}
 	allow := invariant.Set{}
-	return &activeTestStore{Service: workspace.New(manager, manager, id, time.Now), conversation: conversation.New(manager, client, extractor, titles, settings, id, time.Now, allow), tasks: taskflow.New(manager, client, extractor, extractjson.ProposalDecoder{}, model.TaskRouter{}, titles, settings, id, time.Now, allow), state: manager}, nil
+	return &activeTestStore{Service: workspace.New(manager, manager, id, time.Now), conversation: conversation.New(manager, client, extractor, titles, settings, id, time.Now, allow), tasks: taskflow.New(manager, client, extractor, extractjson.ProposalDecoder{}, extractjson.NewTaskPromptBuilder(), model.TaskRouter{}, titles, settings, id, time.Now, allow), state: manager}, nil
 }
 
 func TestActiveContractErrorsAreSafe(t *testing.T) {

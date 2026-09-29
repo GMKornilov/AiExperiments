@@ -22,7 +22,10 @@ trap cleanup EXIT
 "${compose[@]}" --profile diagnostics run --rm --build --no-deps brewmark-mcp-client
 node "$repo_root/frontend/e2e/mcp-compose-smoke.mjs" "http://127.0.0.1:$BREWMARK_MCP_SMOKE_PORT/mcp"
 npm --prefix "$repo_root/frontend" run test:e2e
+"${compose[@]}" exec -T fixture-provider node -e 'fetch("http://127.0.0.1:18081/__tool-state?reset=1")' >/dev/null
 node "$repo_root/frontend/e2e/compose-state.mjs" prepare "$fixture_dir/expected.json"
+"${compose[@]}" exec -T fixture-provider node -e 'fetch("http://127.0.0.1:18081/__tool-state").then((response) => response.text()).then(console.log)' > "$fixture_dir/tool-state.json"
+node "$repo_root/frontend/e2e/compose-state.mjs" tool-audit "$fixture_dir/tool-state.json"
 "${compose[@]}" logs --no-color >> "$fixture_dir/runtime.log" 2>&1
 "${compose[@]}" up -d --no-deps --force-recreate --wait barista-api
 node "$repo_root/frontend/e2e/compose-state.mjs" verify "$fixture_dir/expected.json"

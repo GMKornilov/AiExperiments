@@ -10,8 +10,12 @@
 - Из active `user_feedback` неположительный или уточняющий feedback может
   вернуть задачу в `clarify_input`, `research_input_data` или `execution`.
   Переход `user_feedback → user_feedback` запрещён.
-- Выход из clarify требует явного пользовательского подтверждения оборудования,
-  которое будет использовано. Утверждение модели не служит доказательством.
+- После первого вопроса clarify task LLM сопоставляет следующий user input с
+  последней assistant-репликой и контекстом задачи. При содержательном ответе
+  и достаточных вводных, включая нумерованный список, он обязан предложить
+  `clarify → research`; новый вопрос допустим только для конкретного пробела.
+  Это семантическое решение LLM, без server-side эвристики подтверждения
+  оборудования.
 - Положительный feedback меняет lifecycle status `active → done`; stage остаётся
   `user_feedback` как историческая метка. Done терминален, paused остаётся
   lifecycle-статусом поверх последнего подтверждённого stage.
@@ -33,10 +37,14 @@
   feedback/done — дополнительно `legacy_unvalidated=true`, без backfill
   `passed`. Legacy done терминален, а следующий input legacy feedback
   возвращает её в execution для новой validation.
-- Проверка «явного подтверждения оборудования» должна быть серверным
-  доказуемым контрактом user input. Эвристическое утверждение LLM не подходит.
+- Реальный LLM acceptance smoke на синтетических facts должен доказывать
+  переход после ответа на clarify и два последующих BrewMark lookup; private
+  user memory в этом smoke не используется.
 - Новая semantic проверка как отдельный provider-вызов не принята: validation
   gate обязан уложиться в действующий invariant pipeline и его budget.
+- `research-sufficiency` использует ровно один provider-вызов с runtime timeout
+  60 s; автоматический retry не допускается. Отсутствие verdict к deadline
+  остаётся fail-closed `invariant_validation` по контракту `invariants`.
 
 ## Связанные документы
 

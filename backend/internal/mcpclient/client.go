@@ -3,6 +3,7 @@ package mcpclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -101,6 +102,46 @@ func (c *Client) ListTools(ctx context.Context, correlationID string) ([]Tool, e
 		tools[index] = Tool{Name: tool.Name, Description: tool.Description}
 	}
 	return tools, nil
+}
+
+// Call executes exactly one broker request. Its JSON is the complete MCP tool
+// result envelope, suitable for a role=tool continuation message.
+func (c *Client) Call(ctx context.Context, tool string, arguments json.RawMessage, correlationID string) (json.RawMessage, error) {
+	if c == nil {
+		return nil, &Error{Code: NotConfigured}
+	}
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	client := mcp.NewClient(&mcp.Implementation{Name: "barista-api", Version: "1.0.0"}, nil)
+	transport := &mcp.StreamableClientTransport{Endpoint: c.endpoint, HTTPClient: correlationClient(c.http, correlationID), MaxRetries: -1, DisableStandaloneSSE: true}
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		return nil, classifyConnectError(err)
+	}
+	defer session.Close()
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: arguments})
+	if err != nil {
+		return nil, classifyListError(err)
+	}
+	payload, err := marshalToolResult(result)
+	if err != nil || len(payload) > maxResponseSize {
+		return nil, &Error{Code: InvalidResponse}
+	}
+	return payload, nil
+}
+
+func marshalToolResult(result *mcp.CallToolResult) ([]byte, error) {
+	if result == nil {
+		return nil, errors.New("missing MCP tool result")
+	}
+	// The SDK omits false `isError` due to omitempty. The continuation protocol
+	// requires the complete factual envelope, including false, so keep the
+	// fields explicit without transforming their values.
+	return json.Marshal(struct {
+		Content           []mcp.Content `json:"content"`
+		StructuredContent any           `json:"structuredContent"`
+		IsError           bool          `json:"isError"`
+	}{Content: result.Content, StructuredContent: result.StructuredContent, IsError: result.IsError})
 }
 
 func classifyConnectError(err error) error {

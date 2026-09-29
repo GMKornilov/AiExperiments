@@ -2,14 +2,36 @@ package completion
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"aichallenge/week_1/task_1/internal/domain/model"
 )
 
 type Message struct {
-	Role    string
-	Content string
+	Role       string
+	Content    string
+	ToolCalls  []ToolCall
+	ToolCallID string
+}
+
+// ToolDefinition is the OpenAI-compatible, server-owned contract exposed for
+// one model turn. Arguments are always JSON object payloads.
+type ToolDefinition struct {
+	Name        string
+	Description string
+	Schema      json.RawMessage
+}
+
+type ToolCall struct {
+	ID        string
+	Name      string
+	Arguments json.RawMessage
+}
+
+type Result struct {
+	Text      string
+	ToolCalls []ToolCall
 }
 type Facts struct {
 	GlobalFacts  []string

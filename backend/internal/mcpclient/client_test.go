@@ -2,12 +2,15 @@ package mcpclient
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http/httptest"
 	"testing"
 
 	"aichallenge/week_1/task_1/internal/brewmark"
 	"aichallenge/week_1/task_1/internal/mcpserver"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestNewRejectsUnsafeEndpoint(t *testing.T) {
@@ -19,6 +22,29 @@ func TestNewRejectsUnsafeEndpoint(t *testing.T) {
 		if errorCode(err) != NotConfigured {
 			t.Fatalf("endpoint %q error=%v", endpoint, err)
 		}
+	}
+}
+
+func TestMarshalToolResultKeepsCompleteEnvelope(t *testing.T) {
+	payload, err := marshalToolResult(&mcp.CallToolResult{
+		Content:           []mcp.Content{&mcp.TextContent{Text: "actual text"}},
+		StructuredContent: map[string]any{"items": []string{"one"}},
+		IsError:           false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"content", "structuredContent", "isError"} {
+		if _, ok := envelope[field]; !ok {
+			t.Fatalf("missing %s: %s", field, payload)
+		}
+	}
+	if string(envelope["isError"]) != "false" {
+		t.Fatalf("isError=%s", envelope["isError"])
 	}
 }
 

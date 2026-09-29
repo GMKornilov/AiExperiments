@@ -97,11 +97,8 @@ type Task struct {
 	Plan             []TaskPlanItem
 	CurrentPlanItem  string
 	ValidationResult ValidationResult
-	// EquipmentConfirmed is durable server-side evidence for the current
-	// clarification round. It intentionally has no public API representation.
-	EquipmentConfirmed bool
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 func (s TaskStage) Valid() bool {

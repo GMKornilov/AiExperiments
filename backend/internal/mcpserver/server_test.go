@@ -17,6 +17,11 @@ import (
 	"aichallenge/week_1/task_1/internal/brewmark"
 )
 
+const serverGrinderFixture = `{"id":1,"brand":"Hario","name":"M","minSetting":1,"maxSetting":2,"settingUnit":"CLICKS","espressoAnchor":1,"filterAnchor":2,"coarseAnchor":3,"mokaAnchor":null,"frenchPressAnchor":null,"burrType":null,"createdAt":"2026-09-24T00:00:00Z"}`
+const serverBrewerFixture = `{"id":1,"brand":"Hario","name":"V60","brewMethod":"V60","minBatchGrams":200,"maxBatchGrams":500,"createdAt":"2026-09-24T00:00:00Z"}`
+const serverFilterFixture = `{"id":1,"name":"Paper","grindAdjustment":0,"createdAt":"2026-09-24T00:00:00Z"}`
+const serverMethodFixture = `{"id":"V60","label":"V60","defaultRatio":16,"defaultGrindSetting":20,"description":"Pour over"}`
+
 type observabilityEvent struct {
 	Timestamp     time.Time `json:"timestamp"`
 	Source        string    `json:"source"`
@@ -83,7 +88,7 @@ func TestObservabilityContractEndToEnd(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer "+brewmarkToken {
 			t.Errorf("BrewMark authorization=%q", r.Header.Get("Authorization"))
 		}
-		_, _ = w.Write([]byte(`{"grinders":[{"id":1,"brand":"Hario","model":"M","minGrindIndex":1,"maxGrindIndex":2,"clicksPerFullRange":3}]}`))
+		_, _ = w.Write([]byte(`{"grinders":[` + serverGrinderFixture + `]}`))
 	}))
 	defer upstream.Close()
 
@@ -190,13 +195,13 @@ func TestHTTPContract(t *testing.T) {
 		upstreamCalls++
 		switch request.URL.Path {
 		case "/api/grinders":
-			_, _ = w.Write([]byte(`{"grinders":[{"id":1,"brand":"Hario","model":"M","minGrindIndex":1,"maxGrindIndex":2,"clicksPerFullRange":3}]}`))
+			_, _ = w.Write([]byte(`{"grinders":[` + serverGrinderFixture + `]}`))
 		case "/api/machines":
-			_, _ = w.Write([]byte(`{"machines":[{"id":1,"brand":"Hario","model":"V60","brewMethod":"V60","defaultWaterTempF":200}]}`))
+			_, _ = w.Write([]byte(`{"machines":[` + serverBrewerFixture + `]}`))
 		case "/api/filters":
-			_, _ = w.Write([]byte(`{"filters":[{"id":1,"name":"Paper","type":"paper","description":""}]}`))
+			_, _ = w.Write([]byte(`{"filters":[` + serverFilterFixture + `]}`))
 		case "/api/brew-methods":
-			_, _ = w.Write([]byte(`{"data":[{"name":"V60"}]}`))
+			_, _ = w.Write([]byte(`{"data":[` + serverMethodFixture + `]}`))
 		}
 	}))
 	defer upstream.Close()
@@ -228,8 +233,29 @@ func TestHTTPContract(t *testing.T) {
 	if len(tools) != 4 || upstreamCalls != 0 {
 		t.Fatalf("tools=%d calls=%d", len(tools), upstreamCalls)
 	}
-	for _, rawTool := range tools {
+	contracts := brewmark.ToolContracts()
+	for index, rawTool := range tools {
 		tool := rawTool.(map[string]any)
+		if tool["name"] != contracts[index].Name || tool["description"] != contracts[index].Description {
+			t.Fatalf("tool contract drift: %#v", tool)
+		}
+		actualSchema, err := json.Marshal(tool["inputSchema"])
+		var expectedSchema any
+		if err == nil {
+			err = json.Unmarshal(contracts[index].InputSchema, &expectedSchema)
+		}
+		expectedJSON, marshalErr := json.Marshal(expectedSchema)
+		if err != nil || marshalErr != nil || string(actualSchema) != string(expectedJSON) {
+			t.Fatalf("input schema drift for %s: actual=%s expected=%s err=%v marshal_err=%v", contracts[index].Name, actualSchema, expectedJSON, err, marshalErr)
+		}
+		if (tool["name"] == "brewmark_list_grinders" || tool["name"] == "brewmark_list_brewers") && tool["inputSchema"].(map[string]any)["properties"].(map[string]any)["name"] == nil {
+			t.Fatalf("name lookup is missing from %s", tool["name"])
+		}
+		if tool["name"] == "brewmark_list_brewers" {
+			if _, exists := tool["inputSchema"].(map[string]any)["properties"].(map[string]any)["brewMethod"]; exists {
+				t.Fatal("brewMethod must not be accepted by brewer input schema")
+			}
+		}
 		schema := tool["outputSchema"].(map[string]any)
 		if schema["type"] != "object" || len(schema["oneOf"].([]any)) != 2 {
 			t.Fatalf("unexpected output schema: %#v", schema)
@@ -239,6 +265,31 @@ func TestHTTPContract(t *testing.T) {
 		callResult := rpc(t, server.URL, `{"jsonrpc":"2.0","id":`+strconv.Itoa(id+10)+`,"method":"tools/call","params":{"name":"`+name+`","arguments":{}}}`, "")
 		if callResult["result"].(map[string]any)["isError"] == true {
 			t.Fatalf("tool %s failed: %#v", name, callResult)
+		}
+		structured := callResult["result"].(map[string]any)["structuredContent"].(map[string]any)
+		switch name {
+		case "brewmark_list_grinders":
+			item := structured["grinders"].([]any)[0].(map[string]any)
+			for _, field := range []string{"name", "minSetting", "maxSetting", "settingUnit", "espressoAnchor", "filterAnchor", "coarseAnchor", "mokaAnchor", "frenchPressAnchor", "burrType", "createdAt"} {
+				if _, ok := item[field]; !ok {
+					t.Fatalf("grinder is missing %q: %#v", field, item)
+				}
+			}
+		case "brewmark_list_brewers":
+			item := structured["brewers"].([]any)[0].(map[string]any)
+			if _, ok := item["minBatchGrams"]; !ok {
+				t.Fatalf("brewer schema drift: %#v", item)
+			}
+		case "brewmark_list_filters":
+			item := structured["filters"].([]any)[0].(map[string]any)
+			if _, ok := item["grindAdjustment"]; !ok {
+				t.Fatalf("filter schema drift: %#v", item)
+			}
+		case "brewmark_list_brew_methods":
+			item := structured["methods"].([]any)[0].(map[string]any)
+			if _, ok := item["defaultGrindSetting"]; !ok {
+				t.Fatalf("brew-method schema drift: %#v", item)
+			}
 		}
 	}
 	if upstreamCalls != 4 {
@@ -252,6 +303,13 @@ func TestHTTPContract(t *testing.T) {
 	call := result["result"].(map[string]any)
 	if call["isError"] != true || upstreamCalls != 4 {
 		t.Fatalf("invalid call=%#v calls=%d", call, upstreamCalls)
+	}
+	for _, arguments := range []string{`{"model":"EC685"}`, `{"brewMethod":"ESPRESSO"}`} {
+		result = rpc(t, server.URL, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"brewmark_list_brewers","arguments":`+arguments+`}}`, "")
+		call = result["result"].(map[string]any)
+		if call["isError"] != true || upstreamCalls != 4 {
+			t.Fatalf("legacy brewer argument must fail locally: result=%#v calls=%d", call, upstreamCalls)
+		}
 	}
 	for id, name := range []string{"brewmark_list_grinders", "brewmark_list_brewers", "brewmark_list_filters", "brewmark_list_brew_methods"} {
 		call = rpc(t, server.URL, `{"jsonrpc":"2.0","id":`+strconv.Itoa(id+30)+`,"method":"tools/call","params":{"name":"`+name+`","arguments":null}}`, "")["result"].(map[string]any)

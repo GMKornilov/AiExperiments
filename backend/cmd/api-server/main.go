@@ -78,16 +78,16 @@ func main() {
 	invariants := invariant.NewSet(client)
 	titles := conversation.NewTitles(store, client, settings.TitlePrompt, time.Now)
 	extractor := extractjson.NewExtractor(client, snapshot.Memory.Snapshot.SystemPrompt)
-	workspaceService := workspace.New(store, store, id, time.Now)
-	conversationService := conversation.New(store, client, extractor, titles, settings, id, time.Now, invariants)
-	tasks := taskflow.New(store, client, extractor, extractjson.ProposalDecoder{}, model.TaskRouter{}, titles, settings, id, time.Now, invariants)
-	closeStore := func() { store.Close(); titles.Close() }
-	defer closeStore()
-	journal := observability.NewJournal(cfg.LogTextPayloads, logger)
 	mcpToolsClient, mcpClientErr := mcpclient.New(os.Getenv("BREWMARK_MCP_URL"))
 	if mcpClientErr != nil {
 		mcpToolsClient = nil
 	}
+	workspaceService := workspace.New(store, store, id, time.Now)
+	conversationService := conversation.New(store, client, extractor, titles, settings, id, time.Now, invariants)
+	tasks := taskflow.New(store, client, extractor, extractjson.ProposalDecoder{}, extractjson.NewTaskPromptBuilder(), model.TaskRouter{}, titles, settings, id, time.Now, invariants, mcpToolsClient)
+	closeStore := func() { store.Close(); titles.Close() }
+	defer closeStore()
+	journal := observability.NewJournal(cfg.LogTextPayloads, logger)
 	server := &http.Server{Addr: cfg.Addr, Handler: httpapi.NewMemory(httpapi.UseCases{Projects: workspaceService, Chats: workspaceService, Profiles: workspaceService, Memory: workspaceService, Conversations: conversationService, Tasks: tasks, Health: store, MCPTools: mcpToolsClient, Invariants: invariants.Public()}, journal)}
 	if err := serve(server, closeStore); err != nil {
 		logger.Error("barista.server", "source", "backend", "event", "server", "result", "failure", "correlation_id", requestID, "error_category", "network")

@@ -36,10 +36,19 @@ func ApplyProposal(previous Task, p Proposal, first bool) (Task, error) {
 	if !legalStageTransition(previous.Stage, p.Stage) || previous.Status == TaskStatusDone {
 		return Task{}, ErrValidation
 	}
-	if previous.Stage == TaskStageUserFeedback && p.Stage == TaskStageUserFeedback && p.Status != TaskStatusDone {
-		return Task{}, ErrValidation
+	if previous.Stage == TaskStageResearchInputData && p.Stage == TaskStageExecution {
+		// Research only prepares the next step. Execution must run in a new
+		// autonomous completion and cannot already be marked complete.
+		if p.Status != TaskStatusActive || !strings.HasPrefix(expected, "agent:") {
+			return Task{}, ErrValidation
+		}
+		for _, item := range p.Plan {
+			if item.Stage == TaskStageExecution && item.Status == TaskPlanItemCompleted {
+				return Task{}, ErrValidation
+			}
+		}
 	}
-	if previous.Stage == TaskStageClarifyInput && p.Stage != previous.Stage && !previous.EquipmentConfirmed {
+	if previous.Stage == TaskStageUserFeedback && p.Stage == TaskStageUserFeedback && p.Status != TaskStatusDone {
 		return Task{}, ErrValidation
 	}
 	if p.Stage == TaskStageClarifyInput && (!strings.HasPrefix(expected, "user:") || len(p.Questions) == 0) {
@@ -87,9 +96,6 @@ func ApplyProposal(previous Task, p Proposal, first bool) (Task, error) {
 	}
 	if previous.Stage == TaskStageUserFeedback && p.Stage != previous.Stage {
 		next.ValidationResult = ValidationResult{Status: ValidationNotValidated}
-		if p.Stage == TaskStageClarifyInput {
-			next.EquipmentConfirmed = false
-		}
 	}
 	if p.Status == TaskStatusDone {
 		next.CurrentStep = previous.CurrentStep

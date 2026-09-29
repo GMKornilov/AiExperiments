@@ -20,7 +20,9 @@ repair/refusal lifecycle, read-only панели, конфигурации valid
 и их персистентности; [агент-бариста](../barista-agent/SPEC.md) — владельцем
 общего жизненного цикла чата и title; [конечный автомат задач](../task-state-machine/SPEC.md)
 — владельцем task state и плана. Эти контракты дополняются настоящим
-документом, а не заменяются им.
+документом, а не заменяются им. Данные каталога BrewMark MCP не являются
+доказательством наличия оборудования у пользователя и не заменяют проверки
+availability/inventory-truth.
 
 В scope входят только следующие публичные кофейные инварианты:
 
@@ -32,8 +34,33 @@ repair/refusal lifecycle, read-only панели, конфигурации valid
 
 Отсутствие fact не доказывает недоступность ресурса: оно означает «неизвестно».
 Неизвестное устройство или зёрна можно упомянуть только как явное условие.
+Системная инструкция `inventory-truth` проверяет только утверждения о наличии,
+отсутствии или доступности оборудования и зёрен. Она не расширяет проверку на
+характеристики, настройку, тип комплектующих, каталожные свойства или иные
+предметные детали. Сырой эллиптический ответ пользователя без переданного
+antecedent-вопроса не подтверждает новый факт и не служит основанием для
+дополнительного вывода о предметных деталях; в таком случае checker оценивает
+только доступные ему утверждения своего scope.
+`research-sufficiency` — внутренний LLM-backed guard только для
+research-only `task_proposal` в `research_input_data`. Он принимает candidate
+лишь если тот ограничен исследованием оборудования и, при отсутствии tool-call,
+подтверждённые input/facts/snapshot достаточны для следующего execution и не
+называют конкретную модель grinder/brewer. Его неизменяемый контекст
+дополнительно содержит только безопасный batch-статус MCP-попыток этого шага и
+флаг `semantic_suspicion` deterministic prefilter-а. Batch-статус равен
+`no tool`, `success`, `partial_failure` или `failure`; per-call статусы
+ограничены `success`, `empty`, `ambiguous` и broker error. Guard не получает
+MCP arguments или result/content, не создаёт fact, не добавляет типизированную
+модель оборудования и не сохраняет статусы MCP-попыток.
 Task transition и final-validation guard — тоже инварианты исполнения, но они
-внутренние и не показываются в пользовательской панели.
+внутренние и не показываются в пользовательской панели. Детерминированная
+проверка может окончательно отклонить только структурный факт (недекодируемый
+proposal, запрещённое ребро stage, status или plan-снимок). Если она по тексту
+proposal лишь подозревает предметное выполнение в research (включая совпадение
+слов вроде «рецепт»), это `semantic_suspicion`, а не `violation`: перед
+окончательным решением candidate обязательно проходит существующий LLM-backed
+`research-sufficiency` checker. Только его строго декодированный `violation`
+может запустить repair.
 
 Не входят: редактирование или создание правил пользователем, история
 проверок в UI, batching semantic checks, типизированный inventory, проверка
@@ -95,12 +122,38 @@ candidate.
 они не помещаются в контекст модели, subagent возвращает `context_limit`; это
 fail-closed error, а не повод молча удалить значимую информацию.
 
-Три публичных кофейных правила реализуются отдельными LLM-backed
-`Invariant`-ами. Их естественно-языковая семантика и свободные facts не дают
-надёжно детерминировать совпадение названий ресурсов. Task transition и
-final-validation guard реализуются deterministic invariant-ами: они сравнивают
-target proposal только с актуальным подтверждённым server snapshot, а не с
-состоянием, присланным клиентом.
+Три публичных кофейных правила и внутренний `research-sufficiency` реализуются
+отдельными LLM-backed `Invariant`-ами. Их естественно-языковая семантика и
+свободные facts не дают надёжно детерминировать совпадение названий ресурсов
+или достаточность сведений для выполнения. Task transition и final-validation
+guard реализуются deterministic invariant-ами: они сравнивают target proposal
+только с актуальным подтверждённым server snapshot, а не с состоянием,
+присланным клиентом.
+
+`research-sufficiency` получает полный research-only candidate, применимый task
+snapshot, принятый input и facts, но не MCP arguments/result/content. Он
+одновременно оценивает достаточность research и её границу: различает
+фактически выданный пользователю рецепт, параметры или завершённый execution
+результат (`violation`) от описания будущего execution-действия или следующего
+шага (`allow`). Точные значения, явно перенесённые из успешного BrewMark
+catalog result в `catalog handoff` — диапазон и единица шкалы, anchor,
+brew-method default, batch limit, filter adjustment или тип жерновов — являются
+каталожными характеристиками, а не параметрами готового рецепта. Поэтому они
+допустимы в research-only proposal только как подписанные стартовые опоры для
+будущего execution, без дозы, выхода, времени, температуры или инструкции
+заваривания. Само слово «рецепт» и любое другое ключевое слово не является
+ни достаточным, ни необходимым условием `violation`. Поэтому
+`semantic_suspicion` обязательно доходит до этого checker-а, но не создаёт
+отдельный checker или provider-вызов.
+
+Системная инструкция `research-sufficiency` не содержит названий моделей,
+марок, числовых диапазонов, anchor или иных конкретных каталожных значений как
+правила либо примера. Она не требует exact catalog handoff и не отклоняет
+research-only proposal из-за отсутствия точного значения, которого нет в
+переданном checker evidence. Если точное значение присутствует в candidate как
+явно маркированная каталожная опора, guard проверяет лишь границу research
+(отсутствие рецепта и параметров), не подменяя evidence собственным знанием о
+каталоге.
 
 ### Обычный chat
 
@@ -142,24 +195,61 @@ user/refusal pair, а при pre error не принимается никако�
 
 Для каждого task candidate pipeline имеет порядок: строгий proposal decode →
 deterministic transition invariant от актуального подтверждённого server
-snapshot → три sequential semantic checks → final-validation decision, если
-цель proposal — `execution → user_feedback`. Transition guard разрешает только
-граф и status-переходы, определённые
-`task-state-machine`; равный stage трактуется как отсутствие transition. Выход
-из `clarify_input` доказывается явным подтверждением используемого оборудования
-в принятом user input, а не флагом proposal. Для `execution → user_feedback`
+snapshot, включая `semantic_suspicion` без verdict-а →
+`research-sufficiency`, если candidate является research-only proposal → три
+sequential public semantic checks → final-validation decision,
+если цель proposal — `execution → user_feedback`. `research-sufficiency`
+получает только описанный выше safe MCP status и участвует в том же
+allow/violation/error lifecycle, что и другие semantic checks. Transition guard
+разрешает только граф и status-переходы, определённые
+`task-state-machine`; равный stage трактуется как отсутствие transition. Для
+`clarify_input` семантическое сопоставление принятого user input с последним
+вопросом и решение о достаточности принадлежат task LLM по контракту
+`task-state-machine`; transition guard не добавляет server-side эвристику
+ответа. Для `execution → user_feedback`
 final-validation guard требует completed plan и успех всех обязательных
 semantic checks; только тогда server детерминированно формирует публичный
 `validation_result` и безопасный summary. Это не поле task proposal: неизвестное
 поле `validation_result` отклоняется строгим decoder-ом. Этот gate не создаёт
-самостоятельный provider-вызов. Все применимые violations,
-включая неразрешённый transition или неуспех gate, передаются в один repair.
-Даже при violation/error transition все semantic checks выполняются; error
-имеет приоритет над violations.
+самостоятельный provider-вызов. Все применимые violations, включая
+неразрешённый transition, подтверждённый `research-sufficiency` violation или
+неуспех gate, передаются в один repair. `semantic_suspicion` без LLM verdict
+не расходует repair и не блокирует candidate. При timeout, network/provider,
+strict-decode, context-limit или иной ошибке `research-sufficiency` весь шаг
+завершается fail-closed `invariant_validation`: repair/refusal не создаётся,
+candidate не принимается, user/refusal pair, facts, task state и plan не
+меняются; пользователь вручную повторяет исходный шаг. Даже при
+violation/error transition все semantic checks выполняются; error имеет
+приоритет над violations.
+
+В `research_input_data` до decode допустимый response может быть batch из
+одного–четырёх уникальных BrewMark tool-calls по `brewmark-mcp`, когда для
+следующего выполнения нужен каталожный факт об оборудовании; lookup названной
+конкретной модели grinder/brewer обязателен. Если дополнительные сведения не нужны
+и конкретная модель не названа,
+допустим только research-only proposal, определённый `task-state-machine`.
+После всех tool results единственный synthesis обязан пройти полный pipeline как
+research-only proposal; tool-call не создаёт durable state. Ни этот proposal,
+ни synthesis не могут содержать рецепт, параметры, иной предметный результат
+или завершение execution-пункта. Принятый переход в `execution` завершает
+research; следующий execution step начинается отдельным LLM-вызовом. Неизвестный,
+дублированный, batch больше четырёх, неверно сформированный или вне-stage
+tool-call отклоняется как невалидный candidate и не вызывает MCP.
+
+`research-sufficiency` получает explicit `proposed_stage` из строго
+декодированного candidate и оценивает только этот предложенный переход.
+Если `proposed_stage=research_input_data`, guard не вправе объявлять переход в
+`execution` или выполнение лишь по тексту candidate; намерение выполнить
+рецепт на будущем execution step само по себе допустимо. Реальный рецепт,
+параметры или иной предметный output остаются violation research step
+независимо от `proposed_stage`.
 
 На один task step допускаются исходный candidate и максимум два repair
-candidates. На всю пользовательскую task-chain допускается не более восьми
-task candidate/repair provider-вызовов: repair расходует этот общий бюджет.
+candidates: только строго декодированный semantic `violation` может расходовать
+один из двух repair. На всю пользовательскую task-chain допускается не более
+восьми task candidate/repair/tool-loop provider-вызовов: repair и оба вызова
+tool loop расходуют этот общий бюджет. LLM-backed invariant verdict, включая
+`research-sufficiency`, не расходует ни этот бюджет, ни repair budget.
 Pre/post checks, один final extractor и independent title в этот бюджет не
 входят. После каждого разрешённого task candidate следующий автономный шаг
 возможен только когда proposal прошёл все проверки; промежуточные output,
@@ -216,9 +306,10 @@ Pre refusal и exhaustion refusal отображаются как обычная
 ## Ошибки, конфигурация и наблюдаемость
 
 Секция `invariant_validation` обязательна для запуска этого MVP. Она задаёт
-transport/model/timeout для дешёвой
-модели validator-ов. Каждый semantic invariant строит собственный static system
-prompt, но выполняет отдельный последовательный вызов через эту конфигурацию.
+transport/model и runtime `request_timeout=60s` для дешёвой модели validator-ов.
+Каждый semantic invariant строит собственный static system prompt, но выполняет
+ровно один последовательный вызов через эту конфигурацию: automatic retry после
+timeout, network/provider или decoder error запрещён.
 Невалидная, отсутствующая или неполная конфигурация не позволяет backend
 стартовать; частично незащищённый режим не допускается.
 
@@ -235,18 +326,18 @@ facts, task output, reason, prompt, provider payload или secrets. В журн
 | Однозначный pre conflict | Main candidate не вызывается; сохраняются user/refusal pair и результат одного extractor-а. |
 | Post violation | Пользователь не видит candidate; запускается один repair с полным списком violations. |
 | Repair исчерпан | Сохраняется template refusal; task proposal/state не принимается. |
-| Checker timeout/network/provider/invalid/context error | Все applicable checks текущей фазы завершаются; результат — `invariant_validation`, без pair, facts, task state/plan и title. Пользователь вручную повторяет input. |
+| Checker timeout/network/provider/invalid/context error | Все applicable checks текущей фазы завершаются; результат — `invariant_validation`, без repair/refusal, pair, facts, task state/plan и title. Пользователь вручную повторяет input. |
 | Extractor error после accepted chat candidate или refusal без изменения task state | Существующее правило memory-layers сохраняется: pair принимается, старые snapshots остаются, UI показывает memory error. Для конечного разрешённого task candidate действует атомарное правило task flow: не принимается ни pair, ни facts, ни task result. |
 | Cancel/pause/delete | Неподтверждённый pipeline не публикуется; поздний result игнорируется. |
 
 <!-- ac-section: connectivity -->
 ## Связность и восстановление
 
-При offline, timeout или иной транспортной ошибке checker-а применяется
-fail-closed outcome `invariant_validation`: решение не кэшируется как allow и
-не даёт принять candidate. Повтор выполняет все применимые checks заново с тем
-же local input/ID и актуальным server snapshot. Автоматический retry не
-допускается.
+При offline, timeout или иной транспортной ошибке checker-а, включая отсутствие
+verdict к 60 s, применяется fail-closed outcome `invariant_validation`: решение
+не кэшируется как allow и не даёт принять candidate. Повтор выполняет все
+применимые checks заново с тем же local input/ID и актуальным server snapshot.
+Автоматический retry не допускается.
 
 <!-- ac-section: adaptive -->
 ## Адаптивность и доступность
@@ -294,21 +385,28 @@ N/A: панель инвариантов не имеет отдельного UR
 
 Лимиты generation жёсткие: обычный chat использует не более трёх candidate
 calls (исходный + два repair), task-chain — не более восьми task
-candidate/repair calls, включая repairs. На каждый user input выполняются три
-отдельных sequential pre-checks. На каждый candidate выполняются три отдельных
-sequential post-checks. Final extractor запускается один раз только для
-accepted pair/refusal; title независим и не расходует candidate budgets.
+candidate/repair/tool-loop LLM-вызовов, включая repairs. На каждый user input
+выполняются три отдельных sequential pre-checks. На каждый candidate выполняются
+три отдельных sequential public post-checks; research-only proposal добавляет
+ровно один `research-sufficiency` check, в который при наличии передаётся
+`semantic_suspicion`. Final extractor запускается один раз только
+для accepted pair/refusal; title и semantic checks независимы и не расходуют
+candidate budgets.
 
-Абсолютный latency-бюджет не задан: количество validator-вызовов намеренно
-увеличивает latency ради fail-closed гарантии. UI остаётся pending до final
-outcome и не показывает intermediate candidate/repair. При `context_limit`
+Runtime budget каждого validator-вызова — 60 s: valid verdict, пришедший позже
+30 s, но не позже 60 s, обрабатывается штатно; после 60 s это окончательный
+fail-closed timeout без automatic retry. Абсолютный latency-бюджет всей операции
+не задан: последовательность validator-вызовов намеренно увеличивает latency
+ради fail-closed гарантии. UI остаётся pending до final outcome и не показывает
+intermediate candidate/repair. При `context_limit`
 содержимое, необходимое для соблюдения инвариантов, не обрезается.
 
 Обязательный acceptance gate состоит из controlled-provider unit/integration
 и browser-проверок ниже, а также real LLM smoke на настроенной validation
 модели. Smoke запускает четыре фиксированных contexts (недоступное
 оборудование, недоступные зёрна, неподтверждённый inventory, допустимый
-условный вариант) через все три semantic checker-а: не более 12 внешних
+условный вариант) через все три public semantic checker-а и три research
+fixtures (нужен MCP fact / сведения достаточны / semantic suspicion): не более 15 внешних
 LLM-вызовов. Каждый verdict должен успешно декодироваться и дать ожидаемый
 allow/violation по своему ID. Если требуемая реальная конфигурация недоступна,
 acceptance gate не пройден, а не заменяется зелёными controlled tests.
@@ -346,18 +444,23 @@ acceptance gate не пройден, а не заменяется зелёным
   Проверка: controlled provider + persistence integration.
 - **AC-INV-07.** Каждый task proposal декодируется, сравнивается с актуальным
   подтверждённым task snapshot deterministic transition/final-validation
-  guard-ом и затем проходит все три semantic checks. Target transition,
-  подтверждение оборудования и client request не являются источником истины.
-  `validation_result` не входит в proposal: неизвестное поле отклоняется, а
-  после gate его детерминированно создаёт server. Некорректный transition, jump,
-  неуспех gate или ложное подтверждение включаются в один repair и не меняют
-  plan/state до atomic commit. Gate не создаёт дополнительный provider-вызов.
-  Проверка: state-machine integration + controlled provider + storage spy.
+  guard-ом и затем проходит все три public semantic checks. Research-only
+  proposal дополнительно проходит внутренний `research-sufficiency` guard с
+  безопасными batch/per-call статусами MCP-попыток; эти статусы и какой-либо
+  typed equipment domain не сохраняются. Target transition и client request не
+  являются источником истины; семантическое решение о достаточности clarify
+  принимает task LLM, а не server-side heuristic. `validation_result` не входит в
+  proposal: неизвестное поле отклоняется, а после gate его детерминированно
+  создаёт server. Некорректный transition, jump, неуспех gate, ложное
+  подтверждение или violation `research-sufficiency` включаются в один repair
+  и не меняют plan/state до atomic commit. Gate не создаёт дополнительный
+  provider-вызов. Проверка: state-machine integration + controlled provider +
+  storage spy.
 - **AC-INV-08.** На одну task user attempt расходуется не более восьми task
-  candidate/repair calls и не более трёх candidates на один task step. При
-  исчерпании сохраняется user/template-refusal pair после одного extractor-а;
-  новая task не создаётся, существующие task state и plan неизменны.
-  Проверка: controlled provider call count + persistence integration.
+  candidate/repair/tool-loop LLM-вызовов и не более трёх candidates на один task
+  step. При исчерпании сохраняется user/template-refusal pair после одного
+  extractor-а; новая task не создаётся, существующие task state и plan
+  неизменны. Проверка: controlled provider call count + persistence integration.
 - **AC-INV-09.** Подтверждённые availability facts об equipment/beans по
   умолчанию попадают в global memory, включая `нет`, `сломано` и
   `закончилось`; явно project-scoped fact остаётся в project memory и имеет
@@ -383,16 +486,80 @@ acceptance gate не пройден, а не заменяется зелёным
   post/extractor фазе запрещает поздний pair, facts, title или task transition;
   UI показывает только последний подтверждённый snapshot. Проверка: controlled
   blocking provider + browser race + persistence integration.
-- **AC-INV-15.** Mandatory real LLM acceptance smoke выполняет 12 или меньше
-  вызовов настроенной validation-модели для четырёх фиксированных contexts и
-  получает строго декодируемый ожидаемый verdict каждого semantic invariant.
-  Отсутствие доступа к этой модели означает незавершённый acceptance gate.
-  Проверка: live LLM run с подсчётом фактических вызовов.
+- **AC-INV-15.** Mandatory real LLM acceptance smoke выполняет 15 или меньше
+  вызовов настроенной validation-модели: четыре фиксированных context через три
+  public semantic checker-а и три research fixture через
+  `research-sufficiency`. Каждый verdict строго декодируется и даёт ожидаемый
+  allow/violation по своему ID. Отсутствие доступа к этой модели означает
+  незавершённый acceptance gate. Проверка: live LLM run с подсчётом фактических
+  вызовов.
 - **AC-INV-16.** Controlled-provider trace доказывает, что chat candidate,
-  task candidate, title, extractor и каждый из трёх semantic checker-ов делают
-  не более одного provider call на запуск своей роли; decoder error возвращает
+ task candidate, title, extractor, каждый из трёх public semantic checker-ов и
+  `research-sufficiency` при его применимости делает не более одного provider
+  call на запуск своей роли, включая обработку `semantic_suspicion`; decoder error возвращает
   safe technical outcome и не вызывает commit или retry из subagent-а.
   Проверка: controlled provider + storage spy.
+- **AC-INV-17.** `research-sufficiency` получает research-only candidate,
+  подтверждённые input/facts/task snapshot, safe batch/per-call MCP statuses и
+  `semantic_suspicion` при его наличии. В fixture, где для execution требуется каталожный факт либо input
+  называет конкретную модель grinder/brewer, status `no tool` даёт `violation`
+  и один repair без commit. В fixture с достаточными сведениями без названной
+  конкретной модели он даёт `allow` без MCP-вызова и без нового equipment state.
+  При `partial_failure` guard не получает content/results и может дать `allow`
+  только если успешные вызовы и подтверждённые сведения достаточны независимо от
+  failed/empty/ambiguous calls. Проверка: controlled guard/provider + MCP batch
+  trace + persistence inspection.
+- **AC-INV-18.** В research fixture два BrewMark lookup завершаются
+  `success` с `matchStatus=empty`, а synthesis возвращает корректный
+  research-only переход `research_input_data → execution` с текстом о будущем
+  действии «перехожу к сборке рецепта», без рецепта, параметров или completed
+  execution-пункта. Deterministic prefilter фиксирует `semantic_suspicion`,
+  которое передаётся в единственный `research-sufficiency` validator; его
+  `allow` принимает переход без repair и без дополнительного provider-вызова.
+  Следующий отдельный candidate call начинается только с
+  подтверждённого `stage=execution`. При timeout, provider/network,
+  context-limit или нестрогом verdict этого validator-а нет repair/refusal,
+  pair, facts или изменения task snapshot; UI получает
+  `invariant_validation` и ручной retry. Проверка: controlled LLM + MCP trace,
+  fault injection, provider call count и persistence/browser inspection.
+- **AC-INV-19.** При ответе `research-sufficiency` через 31–59 s ровно один
+  provider call возвращает строгий valid verdict и pipeline обрабатывает его
+  как обычный `allow` или `violation`; второй вызов и автоматический repair при
+  `allow` отсутствуют. При отсутствии verdict к 60 s ровно тот же единственный
+  вызов завершается `invariant_validation`, не создаёт repair/refusal, pair,
+  facts или изменения task snapshot и предлагает ручной retry. Проверка:
+  controlled delayed provider (31 s и 61 s), call-count trace и
+  persistence/browser inspection.
+
+- **AC-INV-20.** В candidate с explicit
+  `proposed_stage=research_input_data` и текстом о будущем recipe work
+  `research-sufficiency` получает этот stage и возвращает `allow`, а не
+  выдумывает переход в execution. Candidate с фактическим recipe или числовыми
+  параметрами в том же stage получает `violation`. Проверка: controlled
+  validator prompt/verdict inspection + repair/persistence trace.
+
+- **AC-INV-21.** Research-only candidate с exact BrewMark catalog handoff,
+  содержащим переданные в evidence диапазон, единицу шкалы, anchor и тип
+  жерновов, получает от `research-sufficiency` `allow`, если не содержит
+  готового рецепта или инструкции заваривания. Тот же candidate с дозой,
+  выходом, временем, температурой либо инструкцией приготовления получает
+  `violation`. Проверка: controlled validator fixtures + repair/persistence
+  trace.
+
+- **AC-INV-22.** System instruction `inventory-truth` не рассматривает
+  характеристики оборудования, настройку, тип комплектующих или каталог как
+  утверждения о наличии инвентаря. В fixture с raw ответом «да» без переданного
+  antecedent-вопроса checker не выводит из него новый факт и не создаёт
+  violation по предметной детали вне своего scope. Проверка: controlled
+  validator prompt/verdict inspection.
+
+- **AC-INV-23.** System instruction `research-sufficiency` не содержит
+  конкретных моделей или каталожных чисел. В fixture, где checker evidence не
+  включает точных каталожных значений, research-only переход не получает
+  violation только за отсутствие exact handoff; fixture с переданным handoff
+  по-прежнему получает verdict только по research-границе, а не по совпадению
+  со скрытым значением. Проверка: system-instruction inspection + controlled
+  validator fixtures.
 
 ## Открытые procedural gaps
 

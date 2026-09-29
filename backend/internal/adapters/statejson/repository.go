@@ -25,7 +25,7 @@ type envelope struct {
 }
 
 func Open(path string) (*Repository, model.State, error) {
-	r := &Repository{path: path, version: 7}
+	r := &Repository{path: path, version: 9}
 	empty := model.State{Sessions: map[string]*model.Browser{}}
 	if path == "" {
 		return r, empty, nil
@@ -46,11 +46,19 @@ func Open(path string) (*Repository, model.State, error) {
 	if header.Version == 1 || header.Version == 2 {
 		return r.resetLegacy(data, header.Version)
 	}
-	if header.Version != 3 && header.Version != 4 && header.Version != 5 && header.Version != 7 {
+	if header.Version != 3 && header.Version != 4 && header.Version != 5 && header.Version != 7 && header.Version != 8 && header.Version != 9 {
 		return nil, empty, state.ErrStorage
 	}
+	migratedV8 := header.Version == 8
+	decodeData := data
+	if migratedV8 {
+		decodeData, err = migrateV8(data)
+		if err != nil {
+			return nil, empty, state.ErrStorage
+		}
+	}
 	var d envelope
-	if extractjson.Decode(data, &d) != nil || d.Sessions == nil {
+	if extractjson.Decode(decodeData, &d) != nil || d.Sessions == nil {
 		return nil, empty, state.ErrStorage
 	}
 	// Validate pointer/map shape before conversions; malformed state never resets.
@@ -86,20 +94,20 @@ func Open(path string) (*Repository, model.State, error) {
 	}
 	before, _ := json.Marshal(d)
 	restored := toState(diskState{Sessions: d.Sessions})
+	if migratedV8 {
+		normalizeV8Clarifications(&restored)
+	}
 	if err := normalize(&restored); err != nil {
 		return nil, empty, state.ErrStorage
 	}
 	if err := validate(restored); err != nil {
 		return nil, empty, err
 	}
-	r.version = header.Version
-	if r.version < 7 {
-		r.version = 7
-	}
+	r.version = 9
 	// Only normalized/recovered snapshots need a startup write. Archive the
 	// exact source before any migration, retaining the original version for rollback.
 	after, _ := json.Marshal(envelope{Version: r.version, Sessions: fromState(restored).Sessions})
-	if !bytes.Equal(before, after) {
+	if migratedV8 || !bytes.Equal(before, after) {
 		if err := archive(path+".backup-"+time.Now().UTC().Format("20060102T150405.000000000"), data); err != nil {
 			return nil, empty, state.ErrStorage
 		}
@@ -108,6 +116,100 @@ func Open(path string) (*Repository, model.State, error) {
 		}
 	}
 	return r, restored, nil
+}
+
+func normalizeV8Clarifications(stateValue *model.State) {
+	for _, browser := range stateValue.Sessions {
+		for _, project := range browser.Projects {
+			for _, chat := range project.Chats {
+				for _, task := range chat.Tasks {
+					if task.Stage == model.TaskStageClarifyInput {
+						task.CurrentStep = model.ClarificationStep
+						task.ExpectedAction = model.ClarificationExpectedAction
+						task.Plan = []model.TaskPlanItem{}
+						task.CurrentPlanItem = ""
+					}
+				}
+			}
+		}
+	}
+}
+
+// migrateV8 consumes the removed equipment domain only at the disk boundary.
+// The remaining document is still decoded strictly by the v9 DTO afterwards.
+func migrateV8(data []byte) ([]byte, error) {
+	var value any
+	if extractjson.Decode(data, &value) != nil {
+		return nil, state.ErrStorage
+	}
+	if err := dropV8TaskEquipment(value); err != nil {
+		return nil, err
+	}
+	result, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func dropV8TaskEquipment(value any) error {
+	root, ok := value.(map[string]any)
+	if !ok {
+		return state.ErrStorage
+	}
+	sessions, ok := root["sessions"].(map[string]any)
+	if !ok {
+		return state.ErrStorage
+	}
+	for _, browserValue := range sessions {
+		browser, ok := browserValue.(map[string]any)
+		if !ok {
+			return state.ErrStorage
+		}
+		projects, ok := browser["projects"].(map[string]any)
+		if !ok {
+			return state.ErrStorage
+		}
+		for _, projectValue := range projects {
+			project, ok := projectValue.(map[string]any)
+			if !ok {
+				return state.ErrStorage
+			}
+			chats, ok := project["chats"].(map[string]any)
+			if !ok {
+				return state.ErrStorage
+			}
+			for _, chatValue := range chats {
+				chat, ok := chatValue.(map[string]any)
+				if !ok {
+					return state.ErrStorage
+				}
+				tasks, ok := chat["tasks"].(map[string]any)
+				if !ok {
+					return state.ErrStorage
+				}
+				for _, taskValue := range tasks {
+					task, ok := taskValue.(map[string]any)
+					if !ok {
+						return state.ErrStorage
+					}
+					if contextValue, exists := task["equipment_context"]; exists {
+						if _, ok := contextValue.(map[string]any); !ok {
+							return state.ErrStorage
+						}
+						delete(task, "equipment_context")
+					}
+					if confirmed, exists := task["equipment_confirmed"]; exists {
+						if _, ok := confirmed.(bool); !ok {
+							return state.ErrStorage
+						}
+						delete(task, "equipment_confirmed")
+					}
+				}
+			}
+		}
+	}
+	return nil
 }
 func (r *Repository) Save(value model.State) error {
 	if r.path == "" {

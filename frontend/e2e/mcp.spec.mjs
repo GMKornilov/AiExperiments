@@ -1,10 +1,10 @@
 import { expect, test } from "@playwright/test";
 
 const tools = [
-  ["brewmark_list_brew_methods", "List BrewMark brew methods."],
-  ["brewmark_list_brewers", "List BrewMark brewing machines and manual brewers."],
-  ["brewmark_list_filters", "List BrewMark coffee filters."],
-  ["brewmark_list_grinders", "List BrewMark coffee grinders."],
+  ["brewmark_list_brew_methods", "List BrewMark brew methods during research when the next execution needs a method baseline. Returns id, label, defaultRatio, defaultGrindSetting and description; defaults are starting points, not a generated recipe. It does not confirm user ownership."],
+  ["brewmark_list_brewers", "Look up BrewMark brewers by optional brand and name during research when the next execution needs the brewer's method or supported batch range. Returns matching brand, name, brewMethod, minBatchGrams, maxBatchGrams and match status; it does not confirm user ownership or generate a recipe."],
+  ["brewmark_list_filters", "List BrewMark coffee filters during research when filter-specific grind compensation can affect the next execution. Returns name and grindAdjustment; the adjustment is a catalog starting point, not a generated recipe. It does not confirm user ownership."],
+  ["brewmark_list_grinders", "Look up BrewMark grinders by optional brand and name during research when the next execution needs a model-specific starting grind setting. Returns matching brand, name, minSetting, maxSetting, settingUnit, espressoAnchor, filterAnchor, coarseAnchor, mokaAnchor, frenchPressAnchor, burrType and match status. An applicable anchor is a catalog starting point, not a generated recipe; the result does not confirm user ownership."],
 ];
 
 for (const width of [390, 1440]) {

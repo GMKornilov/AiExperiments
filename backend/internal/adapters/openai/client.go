@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"time"
@@ -15,6 +16,50 @@ import (
 type Client struct {
 	provider agent.Provider
 	snapshot agent.DialogSnapshot
+}
+
+// CompleteWithTools executes one ephemeral tool-aware task completion.
+func (c *Client) CompleteWithTools(ctx context.Context, purpose string, messages []completion.Message, tools []completion.ToolDefinition) (completion.Result, error) {
+	if purpose != "task_step" {
+		return completion.Result{}, completion.Invalid()
+	}
+	snap := c.snapshot.Chat
+	call, cancel := context.WithTimeout(llm.WithPurpose(ctx, purpose), snap.Timeout)
+	defer cancel()
+	input := make([]llm.Message, len(messages))
+	for index, message := range messages {
+		input[index] = llm.Message{Role: message.Role, Content: message.Content, ToolCallID: message.ToolCallID}
+		for _, requested := range message.ToolCalls {
+			toolCall := llm.ToolCall{ID: requested.ID, Type: "function"}
+			toolCall.Function.Name = requested.Name
+			toolCall.Function.Arguments = string(requested.Arguments)
+			input[index].ToolCalls = append(input[index].ToolCalls, toolCall)
+		}
+	}
+	providerTools := make([]llm.Tool, len(tools))
+	for index, tool := range tools {
+		providerTools[index].Type = "function"
+		providerTools[index].Function.Name = tool.Name
+		providerTools[index].Function.Description = tool.Description
+		providerTools[index].Function.Parameters = tool.Schema
+	}
+	result, calls, err := llm.NewClient(snap.BaseURL, snap.APIKey, snap.Timeout).ChatCompletionWithTools(call, snap.Model, input, snap.Temperature, providerTools)
+	if err != nil {
+		category := "provider"
+		var upstream *llm.Error
+		if errors.As(err, &upstream) {
+			category = string(upstream.Kind)
+		}
+		return completion.Result{}, &completion.Error{Category: category, Cause: err}
+	}
+	if call.Err() != nil {
+		return completion.Result{}, &completion.Error{Category: completion.Category(call.Err()), Cause: call.Err()}
+	}
+	out := completion.Result{Text: result.Text}
+	for _, toolCall := range calls {
+		out.ToolCalls = append(out.ToolCalls, completion.ToolCall{ID: toolCall.ID, Name: toolCall.Function.Name, Arguments: json.RawMessage(toolCall.Function.Arguments)})
+	}
+	return out, nil
 }
 
 func New(provider agent.Provider, snapshot agent.DialogSnapshot) (*Client, error) {
@@ -36,7 +81,7 @@ func (c *Client) Complete(ctx context.Context, purpose string, messages []comple
 		snap = c.snapshot.Text
 	case "memory_extractor":
 		snap = c.snapshot.Memory.Snapshot
-	case "invariant_equipment-availability", "invariant_beans-availability", "invariant_inventory-truth":
+	case "invariant_equipment-availability", "invariant_beans-availability", "invariant_inventory-truth", "invariant_research-sufficiency":
 		snap = c.snapshot.InvariantValidation.Snapshot
 	}
 	call, cancel := context.WithTimeout(llm.WithPurpose(ctx, purpose), snap.Timeout)
